@@ -1,0 +1,74 @@
+version: '3.8'
+
+# docker-compose.prod.yml — Cấu hình triển khai toàn diện trên VPS / Server độc lập (Task TS-19)
+services:
+  # ─────────────────────────────────────────────────────────────
+  # 1. Redis Cache & BullMQ Message Broker
+  # ─────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: codelens-redis-prod
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-codelens_secure_redis_pwd}"]
+    volumes:
+      - redis_prod_data:/data
+    networks:
+      - codelens-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-codelens_secure_redis_pwd}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────────────────────────
+  # 2. CodeLens Express API Server
+  # ─────────────────────────────────────────────────────────────
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    container_name: codelens-server-prod
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - MONGODB_URI=${MONGODB_URI}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-codelens_secure_redis_pwd}@redis:6379
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - codelens-internal
+    expose:
+      - "4000"
+
+  # ─────────────────────────────────────────────────────────────
+  # 3. Nginx Reverse Proxy (SSL Termination & Rate Limiting)
+  # ─────────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: codelens-nginx-prod
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    depends_on:
+      - server
+    networks:
+      - codelens-internal
+
+networks:
+  codelens-internal:
+    driver: bridge
+
+volumes:
+  redis_prod_data:
+    driver: local
+

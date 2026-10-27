@@ -1,0 +1,73 @@
+# render.yaml — Render Blueprint Infrastructure-as-Code (Task TS-19)
+# Tự động hóa thiết lập Express API Server, Background Worker và Redis trên Render.com
+
+services:
+  # ─────────────────────────────────────────────────────────────
+  # 1. Express API Web Service
+  # ─────────────────────────────────────────────────────────────
+  - type: web
+    name: codelens-api
+    runtime: node
+    plan: starter
+    region: singapore
+    rootDir: .
+    buildCommand: npm ci && cd apps/server && npm run build
+    startCommand: cd apps/server && npm run start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: MONGODB_URI
+        sync: false # Nhập trên Render Dashboard (MongoDB Atlas Connection String)
+      - key: GEMINI_API_KEY
+        sync: false # Nhập API Key từ Google AI Studio
+      - key: GITHUB_TOKEN
+        sync: false # GitHub Personal Access Token
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false # Secret xác thực HMAC-SHA256 cho Webhook
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: codelens-redis
+          property: connectionString
+
+  # ─────────────────────────────────────────────────────────────
+  # 2. BullMQ Background Worker (PR Review & Ingestion Pipeline)
+  # ─────────────────────────────────────────────────────────────
+  - type: worker
+    name: codelens-worker
+    runtime: node
+    plan: starter
+    region: singapore
+    rootDir: .
+    buildCommand: npm ci && cd apps/server && npm run build
+    startCommand: cd apps/server && npx tsx src/workers/ingest.worker.ts
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: codelens-redis
+          property: connectionString
+
+  # ─────────────────────────────────────────────────────────────
+  # 3. Redis Instance cho BullMQ Job Queue
+  # ─────────────────────────────────────────────────────────────
+  - type: redis
+    name: codelens-redis
+    plan: starter
+    region: singapore
+    maxmemoryPolicy: noeviction
+    ipAllowList: [] # Chỉ cho phép nội bộ services trong cùng Render Network kết nối
+
