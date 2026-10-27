@@ -117,7 +117,20 @@ export default function HomePage() {
 
   // ── Khởi tạo Auth Store khi tải trang ──
   useEffect(() => {
-    initAuth();
+    initAuth().then(() => {
+      if (typeof window !== 'undefined') {
+        const urlParams = new URLSearchParams(window.location.search);
+        const err = urlParams.get('error');
+        const msg = urlParams.get('msg');
+        const provider = urlParams.get('auth_provider');
+
+        if (err) {
+          message.warning(msg ? decodeURIComponent(msg) : 'Đăng nhập GitHub chưa hoàn tất.');
+        } else if (provider === 'github') {
+          message.success('Đăng nhập GitHub thành công!');
+        }
+      }
+    });
   }, [initAuth]);
 
   // ── Danh sách Repositories (Task TS-25 Multi-Repository Management) ──

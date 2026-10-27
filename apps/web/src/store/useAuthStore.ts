@@ -47,9 +47,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (urlToken) {
       tokenToUse = urlToken;
       localStorage.setItem(TOKEN_STORAGE_KEY, urlToken);
-      // Xóa query param trên URL để URL sạch đẹp
-      const newUrl = window.location.pathname;
-      window.history.replaceState({}, document.title, newUrl);
+      // Xóa query param trên URL sau khi các thành phần đã đọc thông báo
+      setTimeout(() => {
+        if (typeof window !== 'undefined') {
+          const newUrl = window.location.pathname;
+          window.history.replaceState({}, document.title, newUrl);
+        }
+      }, 800);
     } else {
       tokenToUse = localStorage.getItem(TOKEN_STORAGE_KEY);
     }

@@ -29,23 +29,86 @@ export class AuthController {
   /**
    * GET /api/auth/github
    * Chuyển hướng người dùng sang trang cấp quyền của GitHub OAuth
+   * HỖ TRỢ FALLBACK THÔNG MINH:
+   * Nếu GITHUB_CLIENT_ID chưa cấu hình nhưng có GITHUB_TOKEN trong .env,
+   * tự động liên kết và đăng nhập ngay bằng tài khoản GitHub thật của Developer!
    */
   static async githubLogin(req: Request, res: Response): Promise<void> {
     const clientId = process.env.GITHUB_CLIENT_ID;
+    const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+
+    // ── Trường hợp 1: Chưa cấu hình OAuth Client ID ──
     if (!clientId) {
-      res.status(400).json({
-        message: 'GITHUB_CLIENT_ID chưa được cấu hình. Vui lòng sử dụng POST /api/auth/demo-login để trải nghiệm nhanh!',
-      });
+      const envGithubToken = process.env.GITHUB_TOKEN;
+      if (envGithubToken && envGithubToken.startsWith('ghp_')) {
+        try {
+          console.log('🔄 [Auth] GITHUB_CLIENT_ID chưa có, tự động xác thực qua GITHUB_TOKEN trong .env...');
+          const userRes = await fetch('https://api.github.com/user', {
+            headers: {
+              Authorization: `Bearer ${envGithubToken}`,
+              'User-Agent': 'CodeLens-AI-Server',
+            },
+          });
+
+          if (userRes.ok) {
+            const gitHubUser = (await userRes.json()) as {
+              id: number;
+              login: string;
+              email?: string;
+              avatar_url?: string;
+            };
+
+            let user = await UserModel.findOne({ githubId: String(gitHubUser.id) });
+            const encryptedToken = encryptToken(envGithubToken);
+
+            if (!user) {
+              user = await UserModel.create({
+                githubId: String(gitHubUser.id),
+                username: gitHubUser.login,
+                email: gitHubUser.email || `${gitHubUser.login}@github.com`,
+                avatarUrl: gitHubUser.avatar_url,
+                encryptedGithubToken: encryptedToken,
+                role: 'DEVELOPER',
+                quota: {
+                  dailyReposLeft: 3,
+                  dailyQueriesLeft: 20,
+                  lastResetAt: new Date(),
+                },
+              });
+            } else {
+              user.username = gitHubUser.login;
+              if (gitHubUser.avatar_url) user.avatarUrl = gitHubUser.avatar_url;
+              user.encryptedGithubToken = encryptedToken;
+              checkAndResetUserQuota(user);
+              await user.save();
+            }
+
+            const jwtToken = generateAuthToken(user);
+            console.log(`✅ [Auth] Đăng nhập GitHub thành công cho tài khoản: @${user.username} (ID: ${user.githubId})`);
+            res.redirect(`${clientUrl}/?token=${jwtToken}&auth_provider=github`);
+            return;
+          }
+        } catch (tokenErr: any) {
+          console.warn('⚠️ [Auth] Lỗi xác thực qua GITHUB_TOKEN:', tokenErr.message);
+        }
+      }
+
+      // Nếu không có token hợp lệ
+      res.redirect(
+        `${clientUrl}/?error=github_oauth_not_configured&msg=${encodeURIComponent(
+          'Chưa cấu hình GITHUB_CLIENT_ID trong apps/server/.env. Bạn có thể bấm "⚡ 1-Click Demo Login" để trải nghiệm ngay!'
+        )}`
+      );
       return;
     }
 
+    // ── Trường hợp 2: Đã cấu hình GitHub OAuth App ──
     const redirectUri = process.env.GITHUB_CALLBACK_URL || 'http://localhost:4000/api/auth/github/callback';
     const scope = 'read:user user:email repo admin:repo_hook';
     const githubAuthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(
       redirectUri
     )}&scope=${encodeURIComponent(scope)}`;
 
-    // Nếu request yêu cầu JSON (ví dụ frontend gọi để lấy link)
     if (req.headers.accept?.includes('application/json')) {
       res.json({ url: githubAuthUrl });
       return;
@@ -63,7 +126,7 @@ export class AuthController {
     const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
 
     if (!code || typeof code !== 'string') {
-      res.redirect(`${clientUrl}/login?error=missing_code`);
+      res.redirect(`${clientUrl}/?error=missing_code`);
       return;
     }
 
@@ -71,7 +134,7 @@ export class AuthController {
     const clientSecret = process.env.GITHUB_CLIENT_SECRET;
 
     if (!clientId || !clientSecret) {
-      res.redirect(`${clientUrl}/login?error=oauth_not_configured`);
+      res.redirect(`${clientUrl}/?error=oauth_not_configured`);
       return;
     }
 
@@ -119,7 +182,6 @@ export class AuthController {
 
       let email = gitHubUser.email;
       if (!email) {
-        // Lấy primary email nếu email profile để private
         try {
           const emailResponse = await fetch('https://api.github.com/user/emails', {
             headers: {
@@ -133,7 +195,7 @@ export class AuthController {
             email = primaryEmailObj.email;
           }
         } catch {
-          // Bỏ qua nếu không lấy được email phụ
+          // Bỏ qua nếu không lấy được email
         }
       }
 
@@ -165,12 +227,12 @@ export class AuthController {
         await user.save();
       }
 
-      // 5. Sinh JWT Token & Điều hướng về Frontend
+      // 5. Sinh JWT Token & Điều hướng về Frontend trang chủ kèm token
       const jwtToken = generateAuthToken(user);
-      res.redirect(`${clientUrl}/auth/callback?token=${jwtToken}`);
+      res.redirect(`${clientUrl}/?token=${jwtToken}&auth_provider=github`);
     } catch (error: any) {
       console.error('❌ [AuthController.githubCallback] Lỗi xác thực GitHub OAuth:', error);
-      res.redirect(`${clientUrl}/login?error=${encodeURIComponent(error.message || 'oauth_failed')}`);
+      res.redirect(`${clientUrl}/?error=${encodeURIComponent(error.message || 'oauth_failed')}`);
     }
   }
 
@@ -198,7 +260,6 @@ export class AuthController {
           },
         });
       } else {
-        // Tự động hồi phục quota cho phiên demo nếu đã hết
         const wasReset = checkAndResetUserQuota(user);
         if (wasReset || user.quota.dailyReposLeft <= 0 || user.quota.dailyQueriesLeft <= 0) {
           user.quota.dailyReposLeft = 3;
@@ -232,7 +293,6 @@ export class AuthController {
         return;
       }
 
-      // Đảm bảo quota luôn được làm mới nếu qua ngày mới
       const wasReset = checkAndResetUserQuota(user);
       if (wasReset) {
         await user.save();
@@ -246,4 +306,3 @@ export class AuthController {
     }
   }
 }
-
