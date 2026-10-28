@@ -49,5 +49,5 @@ WORKDIR /app/apps/server
 EXPOSE 4000
 
 # Khởi chạy Express Server
-CMD ["node", "dist/server.js"]
+CMD ["node", "--experimental-require-module", "dist/server.js"]
 

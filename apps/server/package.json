@@ -7,7 +7,7 @@
     "worker:pr": "tsx watch src/workers/prReview.worker.ts",
     "seed": "tsx src/scripts/seed-samples.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node --experimental-require-module dist/server.js"
   },
   "dependencies": {
     "@codelens/shared": "*",
