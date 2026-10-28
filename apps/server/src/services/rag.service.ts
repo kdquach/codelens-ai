@@ -1,7 +1,7 @@
 // apps/server/src/services/rag.service.ts
 import crypto from 'crypto';
 import mongoose from 'mongoose';
-import { CodeCitation } from '@codelens/shared';
+import { CodeCitation, ActiveTabKey } from '@codelens/shared';
 import { CodeChunkModel, ICodeChunk } from '../models/codeChunk.model';
 import { RepositoryModel } from '../models/repository.model';
 import { redisConnection } from '../config/redis';
@@ -30,6 +30,7 @@ export interface StreamChatOptions {
   repoId: string;
   question: string;
   selectedFile?: string | null;
+  activeTab?: ActiveTabKey;
   history?: Array<{ role: 'user' | 'model'; text: string }>;
   onToken: (token: string) => void;
   onCitations?: (citations: CodeCitation[]) => void;
@@ -37,10 +38,15 @@ export interface StreamChatOptions {
 
 export class RagService {
   /**
-   * Tạo Redis Cache Key từ repoId, question và selectedFile
+   * Tạo Redis Cache Key từ repoId, question, selectedFile và activeTab
    */
-  private static getCacheKey(repoId: string, question: string, selectedFile?: string | null): string {
-    const raw = `${question.trim().toLowerCase()}::${selectedFile || ''}`;
+  private static getCacheKey(
+    repoId: string,
+    question: string,
+    selectedFile?: string | null,
+    activeTab?: ActiveTabKey
+  ): string {
+    const raw = `${question.trim().toLowerCase()}::${selectedFile || ''}::${activeTab || 'architecture'}`;
     const hash = crypto.createHash('sha256').update(raw).digest('hex');
     return `rag:cache:${repoId}:${hash}`;
   }
@@ -242,14 +248,15 @@ export class RagService {
   }
 
   /**
-   * 3. Xây dựng System Prompt Grounded chống ảo giác (Anti-Hallucination)
-   * Định danh rõ ràng Repository hiện tại và cung cấp lịch sử ngữ cảnh
+   * 3. Xây dựng System Prompt Grounded chống ảo giác (Anti-Hallucination) với Dynamic Role Persona
+   * Tự động thích ứng theo Tab đang hoạt động (Architecture, Git Graph, Commits, PR Reviews)
    */
   static buildGroundedPrompt(
     chunks: ICodeChunk[],
     userQuestion: string,
     repoInfo: { name: string; owner: string; repoUrl: string; summary?: string },
-    conversationHistory?: Array<{ role: 'user' | 'model'; text: string }>
+    conversationHistory?: Array<{ role: 'user' | 'model'; text: string }>,
+    activeTab?: ActiveTabKey
   ): { prompt: string; citations: CodeCitation[] } {
     const citations: CodeCitation[] = chunks.map((c) => ({
       filePath: c.filePath,
@@ -265,11 +272,39 @@ export class RagService {
       )
       .join('\n\n');
 
-    const prompt = `Bạn là Trợ lý AI Phân tích Kiến trúc Mã nguồn (Principal Software Architect) của CodeLens AI.
-Bạn đang trực tiếp hỗ trợ phân tích kho lưu trữ (Repository):
+    let rolePersona = `Bạn là Trợ lý AI Phân tích Kiến trúc Mã nguồn (Principal Software Architect) của CodeLens AI.
+Bạn đang hỗ trợ người dùng phân tích kho lưu trữ (Repository):
 - Tên Dự án / Repository: "${repoInfo.name}" (${repoInfo.owner}/${repoInfo.name})
 - URL GitHub: ${repoInfo.repoUrl}
 ${repoInfo.summary ? `- Tóm tắt dự án: ${repoInfo.summary}` : ''}
+
+TRỌNG TÂM PHÂN TÍCH:
+- Ưu tiên ngữ cảnh AST, cấu trúc module, luồng tương tác giữa các class/hàm và sơ đồ tuần tự (Sequence Diagram).
+- Giải thích cách dữ liệu lưu chuyển giữa các tầng kiến trúc (Controller -> Service -> Model/DB).`;
+
+    if (activeTab === 'gitgraph' || activeTab === 'commits') {
+      rolePersona = `Bạn là Chuyên gia Quản lý Phát hành & Git Specialist (Release Engineer & Git Topology Specialist) của CodeLens AI.
+Bạn đang hỗ trợ phân tích kho lưu trữ (Repository):
+- Tên Dự án / Repository: "${repoInfo.name}" (${repoInfo.owner}/${repoInfo.name})
+- URL GitHub: ${repoInfo.repoUrl}
+${repoInfo.summary ? `- Tóm tắt dự án: ${repoInfo.summary}` : ''}
+
+TRỌNG TÂM PHÂN TÍCH:
+- Đóng vai trò Release Engineer / Git Specialist giải thích luồng rẽ nhánh, lịch sử commit và lý do thay đổi.
+- Phân tích sự phân kỳ giữa các nhánh (ahead/behind), tác động của commit đối với sự ổn định của hệ thống và giải thích các diff hunks.`;
+    } else if (activeTab === 'pr_reviews') {
+      rolePersona = `Bạn là Chuyên gia Đánh giá Mã nguồn & Bảo mật (Security & Senior Code Reviewer) của CodeLens AI.
+Bạn đang hỗ trợ phân tích kho lưu trữ (Repository):
+- Tên Dự án / Repository: "${repoInfo.name}" (${repoInfo.owner}/${repoInfo.name})
+- URL GitHub: ${repoInfo.repoUrl}
+${repoInfo.summary ? `- Tóm tắt dự án: ${repoInfo.summary}` : ''}
+
+TRỌNG TÂM PHÂN TÍCH:
+- Đóng vai trò Security & Code Reviewer giải thích rủi ro, lỗ hổng tiềm ẩn (injection, authentication, memory leak, race condition) và code smell.
+- Đưa ra các gợi ý sửa lỗi cụ thể (suggested fixes) có mã nguồn minh họa chi tiết.`;
+    }
+
+    const prompt = `${rolePersona}
 
 LƯU Ý CỐT LÕI:
 Tất cả các đoạn mã trong phần [NGỮ CẢNH MÃ NGUỒN] bên dưới CHÍNH LÀ mã nguồn của dự án "${repoInfo.name}".
@@ -307,7 +342,7 @@ ${userQuestion}`;
    * Luôn cô lập hoàn toàn câu hỏi và kết quả theo đúng repoId
    */
   static async streamChat(options: StreamChatOptions): Promise<void> {
-    const { repoId, question, selectedFile, history, onToken, onCitations } = options;
+    const { repoId, question, selectedFile, activeTab, history, onToken, onCitations } = options;
 
     if (!question || !question.trim()) {
       onToken('Vui lòng nhập câu hỏi để bắt đầu phân tích mã nguồn.');
@@ -330,7 +365,7 @@ ${userQuestion}`;
       summary: repoDoc?.summary || repoDoc?.description || '',
     };
 
-    const cacheKey = this.getCacheKey(repoId, question, selectedFile);
+    const cacheKey = this.getCacheKey(repoId, question, selectedFile, activeTab);
 
     // ── Bước 1: Kiểm tra Semantic Cache trong Redis (< 50ms) ──
     try {
@@ -380,7 +415,13 @@ ${userQuestion}`;
     );
 
     // ── Bước 5: Đóng gói System Prompt & Trích dẫn Citations ──
-    const { prompt, citations } = this.buildGroundedPrompt(strictlyScopedChunks, question, repoInfo, history);
+    const { prompt, citations } = this.buildGroundedPrompt(
+      strictlyScopedChunks,
+      question,
+      repoInfo,
+      history,
+      activeTab
+    );
     if (onCitations) {
       onCitations(citations);
     }

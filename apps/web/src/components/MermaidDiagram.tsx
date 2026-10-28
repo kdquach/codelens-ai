@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import mermaid from 'mermaid';
-import { SyncOutlined, ApartmentOutlined } from '@ant-design/icons';
-import { Space } from 'antd';
+import { SyncOutlined, ApartmentOutlined, ThunderboltOutlined, EyeOutlined } from '@ant-design/icons';
+import { Button, Tooltip, Tag } from 'antd';
 import SequenceDiagramViewer from './SequenceDiagramViewer';
+import InteractiveFlowchartViewer from './InteractiveFlowchartViewer';
 
 interface MermaidDiagramProps {
   code: string;
@@ -43,10 +44,20 @@ function sanitizeMermaidCode(raw: string): string {
   return validLines.join('\n');
 }
 
-export default function MermaidDiagram({ code, isDarkMode, isStreaming }: MermaidDiagramProps) {
+export default function MermaidDiagram({ code, isDarkMode = true, isStreaming }: MermaidDiagramProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [svgContent, setSvgContent] = useState<string>('');
   const [renderError, setRenderError] = useState<boolean>(false);
+  const [flowchartViewMode, setFlowchartViewMode] = useState<'interactive' | 'static'>('interactive');
+
+  // Xác định định dạng biểu đồ
+  const diagramType = useMemo(() => {
+    const trimmed = (code || '').trim();
+    if (trimmed.startsWith('gitGraph')) return 'gitGraph';
+    if (trimmed.startsWith('sequenceDiagram')) return 'sequence';
+    if (trimmed.startsWith('graph') || trimmed.startsWith('flowchart')) return 'flowchart';
+    return 'other';
+  }, [code]);
 
   useEffect(() => {
     // 1. Dọn dẹp triệt để bất kỳ thẻ lỗi nào mà Mermaid tự ý chèn vào document.body
@@ -77,6 +88,12 @@ export default function MermaidDiagram({ code, isDarkMode, isStreaming }: Mermai
           sequence: {
             showSequenceNumbers: true,
             actorMargin: 40,
+          },
+          gitGraph: {
+            showBranches: true,
+            showCommitLabel: true,
+            mainBranchName: 'main',
+            rotateCommitLabel: false,
           },
         });
 
@@ -132,32 +149,88 @@ export default function MermaidDiagram({ code, isDarkMode, isStreaming }: Mermai
         }}
       >
         <SyncOutlined spin style={{ color: '#38bdf8' }} />
-        <span style={{ fontSize: 12, color: '#94a3b8' }}>Đang tạo sơ đồ tuần tự (Sequence Diagram)...</span>
+        <span style={{ fontSize: 12, color: '#94a3b8' }}>Đang tạo sơ đồ kiến trúc...</span>
       </div>
     );
   }
 
-  // Nếu Mermaid gặp lỗi cú pháp do LLM: Tự động kích hoạt Bộ vẽ SequenceDiagramViewer (luôn hiển thị biểu đồ 100%)
+  // 1. Nếu là Flowchart và đang bật chế độ Interactive (hoặc Mermaid bị lỗi cú pháp)
+  if (diagramType === 'flowchart' && (flowchartViewMode === 'interactive' || renderError || !svgContent)) {
+    return (
+      <InteractiveFlowchartViewer
+        code={code}
+        isDarkMode={isDarkMode}
+        onSwitchToStatic={() => setFlowchartViewMode('static')}
+      />
+    );
+  }
+
+  // 2. Nếu Mermaid gặp lỗi cú pháp do LLM đối với Sequence / GitGraph
   if (renderError || !svgContent) {
+    if (diagramType === 'gitGraph') {
+      return (
+        <div style={{ padding: '24px 16px', textAlign: 'center', color: isDarkMode ? '#94a3b8' : '#64748b' }}>
+          <ApartmentOutlined style={{ fontSize: 24, marginBottom: 8, color: '#faad14' }} />
+          <div>Không thể kết xuất sơ đồ Git. Vui lòng kiểm tra lại cấu trúc commit/branch.</div>
+        </div>
+      );
+    }
     return <SequenceDiagramViewer code={code} isDarkMode={isDarkMode} />;
   }
 
+  // 3. Render SVG Mermaid tĩnh (Có nút chuyển sang Interactive Canvas nếu là flowchart)
   return (
     <div
-      ref={containerRef}
       style={{
         margin: '14px 0',
-        padding: '14px',
-        borderRadius: 8,
+        borderRadius: 10,
         background: isDarkMode ? '#0f172a' : '#f8fafc',
         border: isDarkMode ? '1px solid #1e293b' : '1px solid #e2e8f0',
-        overflowX: 'auto',
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center',
+        overflow: 'hidden',
+        position: 'relative',
         boxShadow: isDarkMode ? '0 2px 8px rgba(0, 0, 0, 0.25)' : '0 1px 4px rgba(0, 0, 0, 0.05)',
       }}
-      dangerouslySetInnerHTML={{ __html: svgContent }}
-    />
+    >
+      {/* Header bar cho Flowchart ở chế độ tĩnh để dễ dàng bật tương tác */}
+      {diagramType === 'flowchart' && (
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            padding: '8px 14px',
+            borderBottom: isDarkMode ? '1px solid #1e293b' : '1px solid #e2e8f0',
+            background: isDarkMode ? '#0b1120' : '#f1f5f9',
+          }}
+        >
+          <span style={{ fontSize: 12, fontWeight: 600, color: isDarkMode ? '#94a3b8' : '#64748b' }}>
+            Sơ đồ Flowchart (Chế độ xem SVG tĩnh)
+          </span>
+          <Tooltip title="Mở bảng vẽ Canvas tương tác để di chuyển và kéo thả các thành phần">
+            <Button
+              size="small"
+              type="primary"
+              icon={<ThunderboltOutlined />}
+              onClick={() => setFlowchartViewMode('interactive')}
+              style={{ fontSize: 12, borderRadius: 6 }}
+            >
+              Bật bản đồ tương tác (Kéo thả)
+            </Button>
+          </Tooltip>
+        </div>
+      )}
+
+      <div
+        ref={containerRef}
+        style={{
+          padding: '16px',
+          overflowX: 'auto',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+        }}
+        dangerouslySetInnerHTML={{ __html: svgContent }}
+      />
+    </div>
   );
 }

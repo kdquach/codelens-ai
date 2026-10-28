@@ -115,3 +115,58 @@ export interface ChatSessionDTO {
   updatedAt: string | Date;
   createdAt: string | Date;
 }
+
+// ─────────────────────────────────────────────────────────────
+// Multi-Tab Dashboard & Git Types (Sprint 6)
+// ─────────────────────────────────────────────────────────────
+
+export type ActiveTabKey = 'architecture' | 'gitgraph' | 'commits' | 'pr_reviews';
+
+export interface GitBranchDTO {
+  name: string;
+  commitSha: string;
+  isDefault?: boolean;
+  protected?: boolean;
+}
+
+export interface GitCommitDTO {
+  sha: string;
+  shortSha: string;
+  message: string;
+  authorName: string;
+  authorEmail?: string;
+  authorAvatarUrl?: string;
+  date: string;
+  stats?: {
+    additions: number;
+    deletions: number;
+    total: number;
+  };
+  parents?: string[];
+}
+
+export interface CommitFileChangeDTO {
+  filename: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  changes: number;
+  patch?: string;
+}
+
+export interface CommitDiffDTO {
+  sha: string;
+  shortSha: string;
+  message: string;
+  authorName: string;
+  authorAvatarUrl?: string;
+  date: string;
+  stats: {
+    additions: number;
+    deletions: number;
+    total: number;
+  };
+  files: CommitFileChangeDTO[];
+  summary?: string;
+}
+

@@ -47,10 +47,22 @@ import {
   LogoutOutlined,
   ThunderboltOutlined,
   DeleteOutlined,
+  HistoryOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  MenuOutlined,
+  CompassOutlined,
+  ForkOutlined,
+  ExpandAltOutlined,
+  ApartmentOutlined as ApartmentIcon,
 } from '@ant-design/icons';
 import ArchitectureCanvas from '../components/ArchitectureCanvas';
 import MarkdownRenderer from '../components/MarkdownRenderer';
-import { ArchitectureGraph, IngestProgressEvent, CodeCitation } from '@codelens/shared';
+import GitGraphTab from '../components/GitGraphTab';
+import CommitHistoryTab from '../components/CommitHistoryTab';
+import PRReviewHubTab from '../components/PRReviewHubTab';
+import AIWorkspace, { type WorkspaceTab } from '../components/AIWorkspace';
+import { ArchitectureGraph, IngestProgressEvent, CodeCitation, ActiveTabKey } from '@codelens/shared';
 import { useAuthStore } from '../store/useAuthStore';
 
 const { Title, Text, Paragraph } = Typography;
@@ -149,6 +161,33 @@ export default function HomePage() {
   const [graph, setGraph] = useState<ArchitectureGraph>({ nodes: [], edges: [] });
   const [togglingWebhook, setTogglingWebhook] = useState(false);
 
+  // ── Multi-Tab Dashboard & Layout State (Sprint 6) ──
+  const [activeTab, setActiveTab] = useState<ActiveTabKey>('architecture');
+  const [isChatCollapsed, setIsChatCollapsed] = useState<boolean>(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
+
+  // ── AI Analysis Workspace State ──
+  const [isWorkspaceOpen, setIsWorkspaceOpen] = useState<boolean>(false);
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('explanation');
+  const [workspaceMessageId, setWorkspaceMessageId] = useState<string | null>(null);
+
+  // ── Responsive Window Width Detection ──
+  const [windowWidth, setWindowWidth] = useState<number>(1400);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleResize = () => {
+      const w = window.innerWidth;
+      setWindowWidth(w);
+      if (w < 1024) {
+        setIsSidebarCollapsed(true);
+      }
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   // ── Tiến độ thời gian thực (SSE Progress) ──
   const [progress, setProgress] = useState<number>(0);
   const [step, setStep] = useState<IngestProgressEvent['step'] | null>(null);
@@ -161,10 +200,14 @@ export default function HomePage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
   const chatBottomRef = useRef<HTMLDivElement>(null);
+  const chatMessagesContainerRef = useRef<HTMLDivElement>(null);
 
-  // Tự động cuộn xuống đáy khi có tin nhắn mới hoặc streaming
+  // Tự động cuộn trực tiếp container tin nhắn xuống đáy (không cuộn ancestor/window)
   useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = chatMessagesContainerRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [messages, chatLoading]);
 
   // ── Sprint 4: PR Reviews Drawer State ──
@@ -254,8 +297,7 @@ export default function HomePage() {
       });
       setGraph(data.architectureGraph || { nodes: [], edges: [] });
       message.success(
-        `Đã nạp kiến trúc: ${data.architectureGraph?.nodes?.length || 0} files và ${
-          data.architectureGraph?.edges?.length || 0
+        `Đã nạp kiến trúc: ${data.architectureGraph?.nodes?.length || 0} files và ${data.architectureGraph?.edges?.length || 0
         } mũi tên liên kết.`
       );
     } catch (err: any) {
@@ -592,6 +634,11 @@ export default function HomePage() {
     setQuestion('');
     setChatLoading(true);
 
+    // Nếu đang mở Workspace, tự động hướng Workspace hiển thị tin nhắn mới này
+    if (isWorkspaceOpen) {
+      setWorkspaceMessageId(aiMessageId);
+    }
+
     try {
       const historyPayload = messages
         .filter((m) => m.text && !m.isStreaming)
@@ -610,6 +657,7 @@ export default function HomePage() {
         body: JSON.stringify({
           question: promptText,
           selectedFile,
+          activeTab,
           history: historyPayload,
         }),
       });
@@ -696,16 +744,25 @@ export default function HomePage() {
         prev.map((m) =>
           m.id === aiMessageId
             ? {
-                ...m,
-                text: `⚠️ Lỗi kết nối đến máy chủ AI: ${err.message || 'Không thể nhận phản hồi.'}`,
-                isStreaming: false,
-              }
+              ...m,
+              text: `⚠️ Lỗi kết nối đến máy chủ AI: ${err.message || 'Không thể nhận phản hồi.'}`,
+              isStreaming: false,
+            }
             : m
         )
       );
     } finally {
       setChatLoading(false);
     }
+  };
+
+  /**
+   * Tự động đặt câu hỏi phân tích nhánh Git và kích hoạt AI
+   */
+  const handleAskAIAboutBranch = (branchName: string) => {
+    setIsChatCollapsed(false);
+    const branchPrompt = `Phân tích nhánh Git "${branchName}": Nhánh này đang đi trước/sau bao nhiêu commit so với nhánh chính và tập trung sửa module nào?`;
+    handleAskAI(branchPrompt);
   };
 
   /**
@@ -793,6 +850,76 @@ export default function HomePage() {
   const myRepos = repositories.filter((r) => !r.isSample);
   const sampleRepos = repositories.filter((r) => r.isSample);
 
+  // Dynamic AI Persona theo Active Tab (Sprint 6)
+  const getAIPersonaInfo = () => {
+    switch (activeTab) {
+      case 'architecture':
+        return {
+          title: 'AI Code Architect',
+          role: 'Principal Software Architect',
+          tag: 'AST & Graph',
+          color: 'purple',
+        };
+      case 'gitgraph':
+        return {
+          title: 'AI Release Engineer',
+          role: 'Git Topology & Branching',
+          tag: 'Git Topology',
+          color: 'cyan',
+        };
+      case 'commits':
+        return {
+          title: 'AI Diff Auditor',
+          role: 'Commit History & Diff Hunks',
+          tag: 'Commits & Diff',
+          color: 'green',
+        };
+      case 'pr_reviews':
+        return {
+          title: 'AI Security Reviewer',
+          role: 'Security & Code Reviewer',
+          tag: 'PR Security Audit',
+          color: 'volcano',
+        };
+      default:
+        return {
+          title: 'AI Code Architect',
+          role: 'Software Architect',
+          tag: 'Gemini 2.5 Flash',
+          color: 'blue',
+        };
+    }
+  };
+
+  const persona = getAIPersonaInfo();
+
+  // ── AI Workspace Helpers ──
+  const extractMermaidFromText = (text: string): string | null => {
+    if (!text) return null;
+    const match = text.match(/```mermaid[\r\n\s]+([\s\S]*?)```/i);
+    return match ? match[1].trim() : null;
+  };
+
+  const workspaceMessage =
+    workspaceMessageId !== null
+      ? (messages.find((m) => m.id === workspaceMessageId) ?? null)
+      : (messages.filter((m) => m.sender === 'ai' && (m.text || m.isStreaming)).at(-1) ?? null);
+
+  const workspaceMermaidCode = workspaceMessage
+    ? extractMermaidFromText(workspaceMessage.text)
+    : null;
+
+  const handleOpenWorkspace = (messageId: string, tab: WorkspaceTab = 'explanation') => {
+    setWorkspaceMessageId(messageId);
+    setWorkspaceTab(tab);
+    setIsWorkspaceOpen(true);
+  };
+
+  const handleMenuTabClick = (tabKey: ActiveTabKey) => {
+    setActiveTab(tabKey);
+    setIsWorkspaceOpen(false);
+  };
+
   return (
     <ConfigProvider
       theme={{
@@ -806,31 +933,523 @@ export default function HomePage() {
     >
       <div
         style={{
-          minHeight: '100vh',
+          display: 'flex',
+          flexDirection: 'row',
+          height: '100dvh',
+          maxHeight: '100dvh',
+          width: '100%',
+          boxSizing: 'border-box',
+          overflow: 'hidden',
           background: bgMain,
           color: isDarkMode ? '#e2e8f0' : '#1e293b',
           transition: 'background-color 0.3s ease, color 0.3s ease',
         }}
       >
-        <div style={{ maxWidth: 1600, margin: '0 auto', padding: '16px 24px' }}>
-          {/* ── Top Header Bar (Task TS-24 Auth & Quota) ── */}
-          <Card
+        {/* ── 1. Vertical Sidebar Glassmorphism Dashboard (Cố định chiều cao màn hình) ── */}
+        <aside
+          style={{
+            width: isSidebarCollapsed ? 72 : 230,
+            minWidth: isSidebarCollapsed ? 72 : 230,
+            height: 'calc(100dvh - 20px)',
+            maxHeight: 'calc(100dvh - 20px)',
+            margin: '10px 0 10px 12px',
+            boxSizing: 'border-box',
+            borderRadius: 22,
+            alignSelf: 'center',
+            background: isDarkMode
+              ? 'rgba(15, 23, 42, 0.72)'
+              : 'rgba(255, 255, 255, 0.78)',
+            backdropFilter: 'blur(24px)',
+            WebkitBackdropFilter: 'blur(24px)',
+            border: isDarkMode
+              ? '1px solid rgba(255, 255, 255, 0.12)'
+              : '1px solid rgba(0, 0, 0, 0.08)',
+            boxShadow: isDarkMode
+              ? '0 10px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.12)'
+              : '0 10px 32px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.8)',
+            display: 'flex',
+            flexDirection: 'column',
+            padding: isSidebarCollapsed ? '16px 8px' : '18px 14px',
+            flexShrink: 0,
+            zIndex: 30,
+            overflow: 'hidden',
+            transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+            color: isDarkMode ? '#f8fafc' : '#0f172a',
+            userSelect: 'none',
+          }}
+        >
+          {/* Brand Header */}
+          <div
             style={{
-              marginBottom: 16,
-              background: cardBg,
-              borderColor: cardBorder,
-              boxShadow: isDarkMode ? '0 4px 20px rgba(0, 0, 0, 0.4)' : '0 2px 10px rgba(0, 0, 0, 0.05)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: isSidebarCollapsed ? 'center' : 'flex-start',
+              marginBottom: 14,
+              paddingLeft: isSidebarCollapsed ? 0 : 4,
             }}
-            styles={{ body: { padding: '12px 20px' } }}
           >
-            <Row align="middle" justify="space-between" gutter={[16, 12]}>
-              {/* Logo & Slogan */}
-              <Col xs={24} lg={6}>
-                <Space align="center" size={12}>
+            {isSidebarCollapsed ? (
+              <span style={{ fontSize: 18, fontWeight: 800, color: isDarkMode ? '#f8fafc' : '#0f172a' }}>
+                C
+              </span>
+            ) : (
+              <span
+                style={{
+                  fontSize: 19,
+                  fontWeight: 700,
+                  letterSpacing: '-0.3px',
+                  color: isDarkMode ? '#f8fafc' : '#0f172a',
+                }}
+              >
+                CodeLens
+              </span>
+            )}
+          </div>
+
+          {/* Thin Divider */}
+          <div
+            style={{
+              height: 1,
+              background: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.07)',
+              marginBottom: 14,
+            }}
+          />
+
+          {/* User Profile Card */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              justifyContent: isSidebarCollapsed ? 'center' : 'flex-start',
+              marginBottom: 14,
+              padding: isSidebarCollapsed ? '2px 0' : '2px 4px',
+            }}
+          >
+            <Avatar
+              size={isSidebarCollapsed ? 36 : 38}
+              src={user?.avatarUrl}
+              style={{
+                backgroundColor: '#0b0f17',
+                border: `2px solid ${isDarkMode ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.1)'}`,
+                fontWeight: 700,
+                color: '#fff',
+                flexShrink: 0,
+                fontSize: 13,
+              }}
+            >
+              {user ? user.username.slice(0, 2).toUpperCase() : 'CL'}
+            </Avatar>
+
+            {!isSidebarCollapsed && (
+              <div style={{ overflow: 'hidden', minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 700,
+                    color: isDarkMode ? '#f8fafc' : '#0f172a',
+                    whiteSpace: 'nowrap',
+                    textOverflow: 'ellipsis',
+                    overflow: 'hidden',
+                  }}
+                >
+                  {user ? user.username : 'Developer Guest'}
+                </div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: isDarkMode ? '#94a3b8' : '#64748b',
+                    whiteSpace: 'nowrap',
+                    textOverflow: 'ellipsis',
+                    overflow: 'hidden',
+                  }}
+                >
+                  {user ? (user.role === 'ADMIN' ? 'Admin Account' : 'My Account') : 'Guest Account'}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Thin Divider */}
+          <div
+            style={{
+              height: 1,
+              background: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.07)',
+              marginBottom: 14,
+            }}
+          />
+
+          {/* MENU Label */}
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: '0.8px',
+              color: isDarkMode ? '#94a3b8' : '#64748b',
+              textTransform: 'uppercase',
+              marginBottom: 12,
+              paddingLeft: isSidebarCollapsed ? 0 : 6,
+              textAlign: isSidebarCollapsed ? 'center' : 'left',
+            }}
+          >
+            MENU
+          </div>
+
+          {/* Menu Items List */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1, overflowY: 'auto', paddingRight: 2 }}>
+            {/* Item 1: Bản đồ AST */}
+            <Tooltip title={isSidebarCollapsed ? 'Bản đồ AST' : ''} placement="right">
+              <div
+                onClick={() => handleMenuTabClick('architecture')}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: isSidebarCollapsed ? '10px 0' : '9px 12px',
+                  justifyContent: isSidebarCollapsed ? 'center' : 'flex-start',
+                  borderRadius: 12,
+                  cursor: 'pointer',
+                  background:
+                    activeTab === 'architecture' && !isWorkspaceOpen
+                      ? isDarkMode
+                        ? 'rgba(255, 255, 255, 0.14)'
+                        : 'rgba(0, 0, 0, 0.08)'
+                      : 'transparent',
+                  color:
+                    activeTab === 'architecture' && !isWorkspaceOpen
+                      ? isDarkMode
+                        ? '#ffffff'
+                        : '#0f172a'
+                      : isDarkMode
+                        ? '#94a3b8'
+                        : '#64748b',
+                  fontWeight: activeTab === 'architecture' && !isWorkspaceOpen ? 600 : 500,
+                  transition: 'all 0.2s ease',
+                }}
+                onMouseEnter={(e) => {
+                  if (activeTab !== 'architecture') {
+                    e.currentTarget.style.background = isDarkMode
+                      ? 'rgba(255, 255, 255, 0.06)'
+                      : 'rgba(0, 0, 0, 0.04)';
+                    e.currentTarget.style.color = isDarkMode ? '#ffffff' : '#0f172a';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (activeTab !== 'architecture') {
+                    e.currentTarget.style.background = 'transparent';
+                    e.currentTarget.style.color = isDarkMode ? '#94a3b8' : '#64748b';
+                  }
+                }}
+              >
+                <ApartmentOutlined style={{ fontSize: 18 }} />
+                {!isSidebarCollapsed && (
+                  <span style={{ fontSize: 13, whiteSpace: 'nowrap' }}>Bản đồ AST</span>
+                )}
+              </div>
+            </Tooltip>
+
+            {/* Item 2: Nhánh Git */}
+            <Tooltip title={isSidebarCollapsed ? 'Nhánh Git' : ''} placement="right">
+              <div
+                onClick={() => handleMenuTabClick('gitgraph')}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: isSidebarCollapsed ? '10px 0' : '9px 12px',
+                  justifyContent: isSidebarCollapsed ? 'center' : 'flex-start',
+                  borderRadius: 12,
+                  cursor: 'pointer',
+                  background:
+                    activeTab === 'gitgraph' && !isWorkspaceOpen
+                      ? isDarkMode
+                        ? 'rgba(255, 255, 255, 0.14)'
+                        : 'rgba(0, 0, 0, 0.08)'
+                      : 'transparent',
+                  color:
+                    activeTab === 'gitgraph' && !isWorkspaceOpen
+                      ? isDarkMode
+                        ? '#ffffff'
+                        : '#0f172a'
+                      : isDarkMode
+                        ? '#94a3b8'
+                        : '#64748b',
+                  fontWeight: activeTab === 'gitgraph' && !isWorkspaceOpen ? 600 : 500,
+                  transition: 'all 0.2s ease',
+                }}
+                onMouseEnter={(e) => {
+                  if (activeTab !== 'gitgraph') {
+                    e.currentTarget.style.background = isDarkMode
+                      ? 'rgba(255, 255, 255, 0.06)'
+                      : 'rgba(0, 0, 0, 0.04)';
+                    e.currentTarget.style.color = isDarkMode ? '#ffffff' : '#0f172a';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (activeTab !== 'gitgraph') {
+                    e.currentTarget.style.background = 'transparent';
+                    e.currentTarget.style.color = isDarkMode ? '#94a3b8' : '#64748b';
+                  }
+                }}
+              >
+                <BranchesOutlined style={{ fontSize: 18 }} />
+                {!isSidebarCollapsed && (
+                  <span style={{ fontSize: 13, whiteSpace: 'nowrap' }}>Nhánh Git</span>
+                )}
+              </div>
+            </Tooltip>
+
+            {/* Item 3: Lịch sử Commit */}
+            <Tooltip title={isSidebarCollapsed ? 'Lịch sử Commit' : ''} placement="right">
+              <div
+                onClick={() => handleMenuTabClick('commits')}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: isSidebarCollapsed ? '10px 0' : '9px 12px',
+                  justifyContent: isSidebarCollapsed ? 'center' : 'flex-start',
+                  borderRadius: 12,
+                  cursor: 'pointer',
+                  background:
+                    activeTab === 'commits' && !isWorkspaceOpen
+                      ? isDarkMode
+                        ? 'rgba(255, 255, 255, 0.14)'
+                        : 'rgba(0, 0, 0, 0.08)'
+                      : 'transparent',
+                  color:
+                    activeTab === 'commits' && !isWorkspaceOpen
+                      ? isDarkMode
+                        ? '#ffffff'
+                        : '#0f172a'
+                      : isDarkMode
+                        ? '#94a3b8'
+                        : '#64748b',
+                  fontWeight: activeTab === 'commits' && !isWorkspaceOpen ? 600 : 500,
+                  transition: 'all 0.2s ease',
+                }}
+                onMouseEnter={(e) => {
+                  if (activeTab !== 'commits') {
+                    e.currentTarget.style.background = isDarkMode
+                      ? 'rgba(255, 255, 255, 0.06)'
+                      : 'rgba(0, 0, 0, 0.04)';
+                    e.currentTarget.style.color = isDarkMode ? '#ffffff' : '#0f172a';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (activeTab !== 'commits') {
+                    e.currentTarget.style.background = 'transparent';
+                    e.currentTarget.style.color = isDarkMode ? '#94a3b8' : '#64748b';
+                  }
+                }}
+              >
+                <HistoryOutlined style={{ fontSize: 18 }} />
+                {!isSidebarCollapsed && (
+                  <span style={{ fontSize: 13, whiteSpace: 'nowrap' }}>Lịch sử Commit</span>
+                )}
+              </div>
+            </Tooltip>
+
+            {/* Item 4: Đánh giá PR với badge tròn xanh nổi bật */}
+            <Tooltip title={isSidebarCollapsed ? 'Đánh giá PR' : ''} placement="right">
+              <div
+                onClick={() => handleMenuTabClick('pr_reviews')}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: isSidebarCollapsed ? '10px 0' : '9px 12px',
+                  justifyContent: isSidebarCollapsed ? 'center' : 'space-between',
+                  borderRadius: 12,
+                  cursor: 'pointer',
+                  position: 'relative',
+                  background:
+                    activeTab === 'pr_reviews' && !isWorkspaceOpen
+                      ? isDarkMode
+                        ? 'rgba(255, 255, 255, 0.14)'
+                        : 'rgba(0, 0, 0, 0.08)'
+                      : 'transparent',
+                  color:
+                    activeTab === 'pr_reviews' && !isWorkspaceOpen
+                      ? isDarkMode
+                        ? '#ffffff'
+                        : '#0f172a'
+                      : isDarkMode
+                        ? '#94a3b8'
+                        : '#64748b',
+                  fontWeight: activeTab === 'pr_reviews' && !isWorkspaceOpen ? 600 : 500,
+                  transition: 'all 0.2s ease',
+                }}
+                onMouseEnter={(e) => {
+                  if (activeTab !== 'pr_reviews') {
+                    e.currentTarget.style.background = isDarkMode
+                      ? 'rgba(255, 255, 255, 0.06)'
+                      : 'rgba(0, 0, 0, 0.04)';
+                    e.currentTarget.style.color = isDarkMode ? '#ffffff' : '#0f172a';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (activeTab !== 'pr_reviews') {
+                    e.currentTarget.style.background = 'transparent';
+                    e.currentTarget.style.color = isDarkMode ? '#94a3b8' : '#64748b';
+                  }
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ position: 'relative' }}>
+                    <AuditOutlined style={{ fontSize: 18 }} />
+                    {isSidebarCollapsed && (
+                      <span
+                        style={{
+                          position: 'absolute',
+                          top: -4,
+                          right: -6,
+                          width: 8,
+                          height: 8,
+                          borderRadius: '50%',
+                          background: '#2563eb',
+                          boxShadow: '0 0 6px rgba(37,99,235,0.8)',
+                        }}
+                      />
+                    )}
+                  </div>
+                  {!isSidebarCollapsed && (
+                    <span style={{ fontSize: 13, whiteSpace: 'nowrap' }}>Đánh giá PR</span>
+                  )}
+                </div>
+
+                {/* Badge tròn xanh dương chuẩn như hình mẫu */}
+                {!isSidebarCollapsed && (
                   <div
                     style={{
-                      width: 40,
-                      height: 40,
+                      width: 22,
+                      height: 22,
+                      borderRadius: '50%',
+                      background: '#2563eb',
+                      boxShadow: '0 2px 8px rgba(37, 99, 235, 0.5)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#ffffff',
+                      fontSize: 11,
+                      fontWeight: 700,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {prReviews.length || 3}
+                  </div>
+                )}
+              </div>
+            </Tooltip>
+          </div>
+
+          {/* Thin Divider Trước Logout */}
+          <div
+            style={{
+              height: 1,
+              background: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.07)',
+              margin: '14px 0',
+            }}
+          />
+
+          {/* Log Out Button */}
+          <Tooltip title={isSidebarCollapsed ? (user ? 'Đăng xuất' : 'Đăng nhập Demo') : ''} placement="right">
+            <div
+              onClick={() => {
+                if (user) {
+                  logout();
+                  message.info('Đã đăng xuất.');
+                  fetchRepositories();
+                } else {
+                  handleDemoLogin();
+                }
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: isSidebarCollapsed ? '10px 0' : '9px 12px',
+                justifyContent: isSidebarCollapsed ? 'center' : 'flex-start',
+                borderRadius: 12,
+                cursor: 'pointer',
+                color: isDarkMode ? '#94a3b8' : '#64748b',
+                fontWeight: 500,
+                transition: 'all 0.2s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = isDarkMode
+                  ? 'rgba(239, 68, 68, 0.15)'
+                  : 'rgba(239, 68, 68, 0.1)';
+                e.currentTarget.style.color = '#ef4444';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent';
+                e.currentTarget.style.color = isDarkMode ? '#94a3b8' : '#64748b';
+              }}
+            >
+              <LogoutOutlined style={{ fontSize: 18 }} />
+              {!isSidebarCollapsed && (
+                <span style={{ fontSize: 13, whiteSpace: 'nowrap' }}>
+                  {user ? 'Log Out' : 'Demo Login'}
+                </span>
+              )}
+            </div>
+          </Tooltip>
+        </aside>
+
+        {/* ── 2. Khu vực chính bên phải: Header (chiều dài thu gọn) + Main Viewport + AI Chat ── */}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            flex: 1,
+            minWidth: 0,
+            minHeight: 0,
+            height: '100%',
+            maxHeight: '100dvh',
+            overflow: 'hidden',
+            boxSizing: 'border-box',
+          }}
+        >
+          {/* ── Top Header Bar (Thu gọn chiều dài, chiếm không gian cố định như ban đầu, không đè nội dung) ── */}
+          <header
+            style={{
+              padding: '10px 20px',
+              background: cardBg,
+              borderBottom: `1px solid ${cardBorder}`,
+              boxShadow: isDarkMode ? '0 2px 10px rgba(0, 0, 0, 0.3)' : '0 1px 4px rgba(0, 0, 0, 0.04)',
+              zIndex: 20,
+              flexShrink: 0,
+              boxSizing: 'border-box',
+            }}
+          >
+            <Row align="middle" justify="space-between" gutter={[16, 10]}>
+              {/* Logo & Slogan */}
+              <Col xs={24} lg={8}>
+                <Space align="center" size={10}>
+                  {/* Nút Hamburger Toggle Sidebar */}
+                  <Tooltip title={isSidebarCollapsed ? 'Mở rộng Sidebar' : 'Thu gọn Sidebar'}>
+                    <Button
+                      type="text"
+                      icon={<MenuOutlined style={{ fontSize: 18 }} />}
+                      onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+                      style={{
+                        color: isDarkMode ? '#e2e8f0' : '#1e293b',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: 36,
+                        height: 36,
+                        borderRadius: 8,
+                        background: isDarkMode ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.04)',
+                      }}
+                    />
+                  </Tooltip>
+
+                  <div
+                    style={{
+                      width: 38,
+                      height: 38,
                       borderRadius: 10,
                       background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)',
                       display: 'flex',
@@ -838,12 +1457,17 @@ export default function HomePage() {
                       justifyContent: 'center',
                     }}
                   >
-                    <ApartmentOutlined style={{ fontSize: 24, color: '#fff' }} />
+                    <ApartmentOutlined style={{ fontSize: 22, color: '#fff' }} />
                   </div>
                   <div>
-                    <Title level={4} style={{ margin: 0, fontWeight: 700 }}>
-                      CodeLens AI
-                    </Title>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Title level={4} style={{ margin: 0, fontWeight: 700, fontSize: 16 }}>
+                        CodeLens AI
+                      </Title>
+                      <Tag color="blue" style={{ fontSize: 11, padding: '0 6px', margin: 0, borderRadius: 4 }}>
+                        v2.0
+                      </Tag>
+                    </div>
                     <Text type="secondary" style={{ fontSize: 11 }}>
                       Bản đồ Kiến trúc AST, RAG & Auto PR Reviewer
                     </Text>
@@ -852,8 +1476,8 @@ export default function HomePage() {
               </Col>
 
               {/* Khu vực Người dùng & Quota (Task TS-24) */}
-              <Col xs={24} lg={18} style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
-                <Space size={16} wrap align="center">
+              <Col xs={24} lg={16} style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
+                <Space size={14} wrap align="center">
                   {user ? (
                     // Đã đăng nhập: Hiện Avatar, Username, Role và Hạn mức Quota
                     <Space size={12} align="center" wrap>
@@ -942,7 +1566,7 @@ export default function HomePage() {
                   <Space size={10}>
                     <Button
                       icon={<AuditOutlined />}
-                      onClick={handleOpenPRReviews}
+                      onClick={() => handleMenuTabClick('pr_reviews')}
                       style={{ fontWeight: 600 }}
                     >
                       PR Reviews
@@ -972,766 +1596,857 @@ export default function HomePage() {
                 </Space>
               </Col>
             </Row>
-          </Card>
+          </header>
 
-          {/* ── Thanh Điều hướng Quản lý Repository (Task TS-25) ── */}
-          <Card
+          {/* ── Bố cục Nội dung: Main Viewport (Cuộn độc lập) & Khung Chat AI ── */}
+          <div
             style={{
-              marginBottom: 16,
-              background: cardBg,
-              borderColor: cardBorder,
+              display: 'flex',
+              flex: 1,
+              minHeight: 0,
+              minWidth: 0,
+              overflow: 'hidden',
+              position: 'relative',
+              boxSizing: 'border-box',
             }}
-            styles={{ body: { padding: '14px 20px' } }}
           >
-            <Row gutter={[16, 12]} align="middle">
-              {/* Dropdown Quản lý Đa Repository */}
-              <Col xs={24} md={8} lg={6}>
-                <div style={{ marginBottom: 4 }}>
-                  <Text type="secondary" style={{ fontSize: 11, fontWeight: 600 }}>
-                    CHỌN DỰ ÁN (MULTI-REPO):
-                  </Text>
-                </div>
-                <Select
-                  size="large"
-                  style={{ width: '100%' }}
-                  placeholder="Chọn dự án đã phân tích..."
-                  value={repoId || undefined}
-                  onChange={handleSelectRepoById}
-                  loading={loadingRepos}
-                >
-                  {myRepos.length > 0 && (
-                    <Select.OptGroup label="🚀 Dự án của tôi">
-                      {myRepos.map((r) => (
-                        <Select.Option key={r._id} value={r._id}>
-                          <div
-                            style={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'center',
-                            }}
-                          >
-                            <span
-                              style={{
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                                maxWidth: 160,
-                                fontWeight: 500,
-                              }}
-                            >
-                              {r.name}
-                            </span>
-                            <Space size={4} onClick={(e) => e.stopPropagation()}>
-                              <Tag
-                                color={r.status === 'COMPLETED' ? 'blue' : 'warning'}
-                                style={{ fontSize: 10, margin: 0 }}
-                              >
-                                {r.status}
-                              </Tag>
-                              <Popconfirm
-                                title="Xác nhận xóa dự án?"
-                                description="Toàn bộ Code Chunks, Chat Sessions và PR Reviews sẽ bị xóa."
-                                onConfirm={(e) => handleDeleteRepo(r._id, e)}
-                                okText="Xóa"
-                                cancelText="Hủy"
-                              >
-                                <Button
-                                  type="text"
-                                  size="small"
-                                  danger
-                                  icon={<DeleteOutlined />}
-                                  style={{ width: 22, height: 22, minWidth: 22, padding: 0 }}
-                                />
-                              </Popconfirm>
-                            </Space>
-                          </div>
-                        </Select.Option>
-                      ))}
-                    </Select.OptGroup>
-                  )}
+            {/* ── 2. Vùng Trung Tâm (Main Viewport hoặc AI Workspace) ── */}
+            {isWorkspaceOpen ? (
+              <AIWorkspace
+                message={workspaceMessage}
+                mermaidCode={workspaceMermaidCode}
+                activeTab={workspaceTab}
+                onTabChange={setWorkspaceTab}
+                onClose={() => setIsWorkspaceOpen(false)}
+                repoName={repoMetadata ? `${repoMetadata.owner}/${repoMetadata.name}` : undefined}
+                isDarkMode={isDarkMode}
+                cardBg={cardBg}
+                cardBorder={cardBorder}
+                onCitationClick={(filePath) => setSelectedFile(filePath)}
+                onAskForDiagram={(type) => {
+                  let prompt = 'Vẽ sơ đồ tương tác giải thích chi tiết cho kiến trúc này.';
+                  if (type === 'flowchart') {
+                    prompt = 'Hãy phân tích và vẽ sơ đồ Mermaid Flowchart (flowchart TD) chi tiết các bước xử lý, rẽ nhánh điều kiện và luồng dữ liệu cho chức năng/module này để người dùng có thể kéo thả tương tác.';
+                  } else if (type === 'sequence') {
+                    prompt = 'Hãy vẽ sơ đồ tuần tự Sequence Diagram chi tiết thứ tự gọi hàm, API và database cho chức năng này.';
+                  } else if (type === 'architecture') {
+                    prompt = 'Hãy vẽ sơ đồ phân tầng kiến trúc tổng quan (Controller -> Service -> Model) bằng cú pháp Mermaid flowchart TD cho repository này.';
+                  } else if (type === 'erd') {
+                    prompt = 'Hãy phân tích cấu trúc dữ liệu và vẽ sơ đồ quan hệ thực thể (ERD / Data Model) bằng Mermaid cho các model trong repository này.';
+                  }
+                  handleAskAI(prompt);
+                  setWorkspaceTab('diagram');
+                }}
+              />
+            ) : (
+              <main
+                style={{
+                  flex: 1,
+                  height: '100%',
+                  maxHeight: '100%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  minWidth: 0,
+                  minHeight: 0,
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
+                  background: bgMain,
+                  padding: '16px 20px',
+                  boxSizing: 'border-box',
+                }}
+              >
 
-                  <Select.OptGroup label="📦 Dự án mẫu (Sample Repos)">
-                    {sampleRepos.map((s) => (
-                      <Select.Option key={s._id} value={s._id}>
+                {/* ── Thanh Điều hướng Quản lý Repository (Task TS-25) ── */}
+                <Card
+                  style={{
+                    marginBottom: 16,
+                    background: cardBg,
+                    borderColor: cardBorder,
+                  }}
+                  styles={{ body: { padding: '14px 20px' } }}
+                >
+                  <Row gutter={[16, 12]} align="middle">
+                    {/* Dropdown Quản lý Đa Repository */}
+                    <Col xs={24} md={8} lg={6}>
+                      <div style={{ marginBottom: 4 }}>
+                        <Text type="secondary" style={{ fontSize: 11, fontWeight: 600 }}>
+                          CHỌN DỰ ÁN (MULTI-REPO):
+                        </Text>
+                      </div>
+                      <Select
+                        size="large"
+                        style={{ width: '100%' }}
+                        placeholder="Chọn dự án đã phân tích..."
+                        value={repoId || undefined}
+                        onChange={handleSelectRepoById}
+                        loading={loadingRepos}
+                      >
+                        {myRepos.length > 0 && (
+                          <Select.OptGroup label="🚀 Dự án của tôi">
+                            {myRepos.map((r) => (
+                              <Select.Option key={r._id} value={r._id}>
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                      maxWidth: 160,
+                                      fontWeight: 500,
+                                    }}
+                                  >
+                                    {r.name}
+                                  </span>
+                                  <Space size={4} onClick={(e) => e.stopPropagation()}>
+                                    <Tag
+                                      color={r.status === 'COMPLETED' ? 'blue' : 'warning'}
+                                      style={{ fontSize: 10, margin: 0 }}
+                                    >
+                                      {r.status}
+                                    </Tag>
+                                    <Popconfirm
+                                      title="Xác nhận xóa dự án?"
+                                      description="Toàn bộ Code Chunks, Chat Sessions và PR Reviews sẽ bị xóa."
+                                      onConfirm={(e) => handleDeleteRepo(r._id, e)}
+                                      okText="Xóa"
+                                      cancelText="Hủy"
+                                    >
+                                      <Button
+                                        type="text"
+                                        size="small"
+                                        danger
+                                        icon={<DeleteOutlined />}
+                                        style={{ width: 22, height: 22, minWidth: 22, padding: 0 }}
+                                      />
+                                    </Popconfirm>
+                                  </Space>
+                                </div>
+                              </Select.Option>
+                            ))}
+                          </Select.OptGroup>
+                        )}
+
+                        <Select.OptGroup label="📦 Dự án mẫu (Sample Repos)">
+                          {sampleRepos.map((s) => (
+                            <Select.Option key={s._id} value={s._id}>
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                }}
+                              >
+                                <span style={{ fontWeight: 500 }}>{s.name}</span>
+                                <Tag color="cyan" style={{ fontSize: 10, margin: 0 }}>
+                                  Mẫu
+                                </Tag>
+                              </div>
+                            </Select.Option>
+                          ))}
+                        </Select.OptGroup>
+                      </Select>
+                    </Col>
+
+                    {/* Ô Nhập URL nạp Repository mới */}
+                    <Col xs={24} md={16} lg={18}>
+                      <div style={{ marginBottom: 4 }}>
+                        <Text type="secondary" style={{ fontSize: 11, fontWeight: 600 }}>
+                          HOẶC NẠP REPOSITORY MỚI TỪ GITHUB:
+                        </Text>
+                      </div>
+                      <Space.Compact style={{ width: '100%' }}>
+                        <Input
+                          size="large"
+                          prefix={<GithubOutlined style={{ color: '#94a3b8' }} />}
+                          placeholder="Dán URL GitHub (Ví dụ: https://github.com/owner/repo)..."
+                          value={repoUrl}
+                          onChange={(e) => setRepoUrl(e.target.value)}
+                          onPressEnter={handleAnalyzeRepo}
+                          disabled={analyzing}
+                        />
+                        <Button
+                          type="primary"
+                          size="large"
+                          icon={analyzing ? <SyncOutlined spin /> : <RocketOutlined />}
+                          loading={analyzing}
+                          onClick={handleAnalyzeRepo}
+                          style={{
+                            background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
+                            borderColor: 'transparent',
+                            fontWeight: 600,
+                            padding: '0 24px',
+                          }}
+                        >
+                          {analyzing ? 'Đang phân tích...' : 'Phân tích AST'}
+                        </Button>
+                      </Space.Compact>
+                    </Col>
+                  </Row>
+                </Card>
+
+                {/* ── Thanh tiến trình nạp Repository thời gian thực ── */}
+                {analyzing && (
+                  <Card
+                    style={{
+                      marginBottom: 16,
+                      background: cardBg,
+                      borderColor: cardBorder,
+                    }}
+                    styles={{ body: { padding: '14px 20px' } }}
+                  >
+                    <Row align="middle" gutter={[16, 16]}>
+                      <Col xs={24} lg={16}>
                         <div
                           style={{
                             display: 'flex',
                             justifyContent: 'space-between',
                             alignItems: 'center',
+                            marginBottom: 8,
                           }}
                         >
-                          <span style={{ fontWeight: 500 }}>{s.name}</span>
-                          <Tag color="cyan" style={{ fontSize: 10, margin: 0 }}>
-                            Mẫu
+                          <Space>
+                            <SyncOutlined spin style={{ color: '#38bdf8' }} />
+                            <Text strong style={{ fontSize: 14 }}>
+                              {progressMsg || 'Đang quét repository...'}
+                            </Text>
+                          </Space>
+                          <Tag color={step === 'COMPLETED' ? 'success' : 'processing'} style={{ fontWeight: 600 }}>
+                            {progress}%
                           </Tag>
                         </div>
-                      </Select.Option>
-                    ))}
-                  </Select.OptGroup>
-                </Select>
-              </Col>
 
-              {/* Ô Nhập URL nạp Repository mới */}
-              <Col xs={24} md={16} lg={18}>
-                <div style={{ marginBottom: 4 }}>
-                  <Text type="secondary" style={{ fontSize: 11, fontWeight: 600 }}>
-                    HOẶC NẠP REPOSITORY MỚI TỪ GITHUB:
-                  </Text>
-                </div>
-                <Space.Compact style={{ width: '100%' }}>
-                  <Input
-                    size="large"
-                    prefix={<GithubOutlined style={{ color: '#94a3b8' }} />}
-                    placeholder="Dán URL GitHub (Ví dụ: https://github.com/owner/repo)..."
-                    value={repoUrl}
-                    onChange={(e) => setRepoUrl(e.target.value)}
-                    onPressEnter={handleAnalyzeRepo}
-                    disabled={analyzing}
-                  />
-                  <Button
-                    type="primary"
-                    size="large"
-                    icon={analyzing ? <SyncOutlined spin /> : <RocketOutlined />}
-                    loading={analyzing}
-                    onClick={handleAnalyzeRepo}
-                    style={{
-                      background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
-                      borderColor: 'transparent',
-                      fontWeight: 600,
-                      padding: '0 24px',
-                    }}
-                  >
-                    {analyzing ? 'Đang phân tích...' : 'Phân tích AST'}
-                  </Button>
-                </Space.Compact>
-              </Col>
-            </Row>
-          </Card>
+                        <Progress
+                          percent={progress}
+                          status={step === 'FAILED' ? 'exception' : 'active'}
+                          strokeColor={{
+                            '0%': '#3b82f6',
+                            '50%': '#8b5cf6',
+                            '100%': '#10b981',
+                          }}
+                          showInfo={false}
+                        />
+                      </Col>
 
-          {/* ── Thanh tiến trình nạp Repository thời gian thực ── */}
-          {analyzing && (
-            <Card
-              style={{
-                marginBottom: 16,
-                background: cardBg,
-                borderColor: cardBorder,
-              }}
-              styles={{ body: { padding: '14px 20px' } }}
-            >
-              <Row align="middle" gutter={[16, 16]}>
-                <Col xs={24} lg={16}>
+                      <Col xs={24} lg={8}>
+                        <Steps
+                          size="small"
+                          current={getStepIndex(step)}
+                          items={[
+                            { title: 'Tải Git', description: 'GitHub Blobs' },
+                            { title: 'AST Parser', description: 'ts-morph RAM' },
+                            { title: 'Vector AI', description: 'Gemini 768d' },
+                            { title: 'Sẵn sàng', description: 'Render Canvas' },
+                          ]}
+                        />
+                      </Col>
+                    </Row>
+                  </Card>
+                )}
+
+                {/* ── Thông tin & Bật/Tắt Webhook Auto-Review PR (Task TS-23 & TS-25) ── */}
+                {repoMetadata && !analyzing && (
                   <div
                     style={{
+                      marginBottom: 16,
+                      padding: '10px 18px',
+                      background: cardBg,
+                      borderRadius: 10,
+                      border: `1px solid ${cardBorder}`,
                       display: 'flex',
                       justifyContent: 'space-between',
                       alignItems: 'center',
-                      marginBottom: 8,
+                      flexWrap: 'wrap',
+                      gap: 12,
                     }}
                   >
-                    <Space>
-                      <SyncOutlined spin style={{ color: '#38bdf8' }} />
-                      <Text strong style={{ fontSize: 14 }}>
-                        {progressMsg || 'Đang quét repository...'}
-                      </Text>
+                    <Space size={16} wrap align="center">
+                      <span style={{ fontWeight: 700, fontSize: 14 }}>
+                        📦 {repoMetadata.owner}/{repoMetadata.name}
+                      </span>
+                      <Divider type="vertical" />
+                      <Space size={4}>
+                        <FileTextOutlined style={{ color: '#38bdf8' }} />
+                        <Text style={{ fontSize: 13 }}>
+                          Files: <strong style={{ color: '#38bdf8' }}>{graph.nodes.length}</strong>
+                        </Text>
+                      </Space>
+                      <Space size={4}>
+                        <BranchesOutlined style={{ color: '#10b981' }} />
+                        <Text style={{ fontSize: 13 }}>
+                          Liên kết: <strong style={{ color: '#10b981' }}>{graph.edges.length}</strong>
+                        </Text>
+                      </Space>
+                      <Space size={4}>
+                        <CodeOutlined style={{ color: '#f59e0b' }} />
+                        <Text style={{ fontSize: 13 }}>
+                          Tổng LOC: <strong style={{ color: '#f59e0b' }}>{totalLoc.toLocaleString()}</strong>
+                        </Text>
+                      </Space>
                     </Space>
-                    <Tag color={step === 'COMPLETED' ? 'success' : 'processing'} style={{ fontWeight: 600 }}>
-                      {progress}%
-                    </Tag>
-                  </div>
 
-                  <Progress
-                    percent={progress}
-                    status={step === 'FAILED' ? 'exception' : 'active'}
-                    strokeColor={{
-                      '0%': '#3b82f6',
-                      '50%': '#8b5cf6',
-                      '100%': '#10b981',
-                    }}
-                    showInfo={false}
-                  />
-                </Col>
+                    {/* Nút Gạt Webhook Auto-Review PR (Task TS-23) & Phím tắt */}
+                    <Space size={16} align="center" wrap>
+                      <Space size={8} align="center">
+                        <Text style={{ fontSize: 13, fontWeight: 500 }}>Auto-Review PR:</Text>
+                        <Tooltip title="Tự động bóc tách git diff và đăng nhận xét lên GitHub khi có PR mới">
+                          <Switch
+                            checked={repoMetadata.webhookActive || false}
+                            loading={togglingWebhook}
+                            onChange={handleToggleWebhook}
+                            checkedChildren="BẬT"
+                            unCheckedChildren="TẮT"
+                          />
+                        </Tooltip>
+                        {repoMetadata.webhookActive && (
+                          <Tag color="success" icon={<CheckCircleOutlined />}>
+                            Active
+                          </Tag>
+                        )}
+                      </Space>
 
-                <Col xs={24} lg={8}>
-                  <Steps
-                    size="small"
-                    current={getStepIndex(step)}
-                    items={[
-                      { title: 'Tải Git', description: 'GitHub Blobs' },
-                      { title: 'AST Parser', description: 'ts-morph RAM' },
-                      { title: 'Vector AI', description: 'Gemini 768d' },
-                      { title: 'Sẵn sàng', description: 'Render Canvas' },
-                    ]}
-                  />
-                </Col>
-              </Row>
-            </Card>
-          )}
-
-          {/* ── Thông tin & Bật/Tắt Webhook Auto-Review PR (Task TS-23 & TS-25) ── */}
-          {repoMetadata && !analyzing && (
-            <div
-              style={{
-                marginBottom: 16,
-                padding: '10px 18px',
-                background: cardBg,
-                borderRadius: 10,
-                border: `1px solid ${cardBorder}`,
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: 12,
-              }}
-            >
-              <Space size={16} wrap align="center">
-                <span style={{ fontWeight: 700, fontSize: 14 }}>
-                  📦 {repoMetadata.owner}/{repoMetadata.name}
-                </span>
-                <Divider type="vertical" />
-                <Space size={4}>
-                  <FileTextOutlined style={{ color: '#38bdf8' }} />
-                  <Text style={{ fontSize: 13 }}>
-                    Files: <strong style={{ color: '#38bdf8' }}>{graph.nodes.length}</strong>
-                  </Text>
-                </Space>
-                <Space size={4}>
-                  <BranchesOutlined style={{ color: '#10b981' }} />
-                  <Text style={{ fontSize: 13 }}>
-                    Liên kết: <strong style={{ color: '#10b981' }}>{graph.edges.length}</strong>
-                  </Text>
-                </Space>
-                <Space size={4}>
-                  <CodeOutlined style={{ color: '#f59e0b' }} />
-                  <Text style={{ fontSize: 13 }}>
-                    Tổng LOC: <strong style={{ color: '#f59e0b' }}>{totalLoc.toLocaleString()}</strong>
-                  </Text>
-                </Space>
-              </Space>
-
-              {/* Nút Gạt Webhook Auto-Review PR (Task TS-23) & Phím tắt */}
-              <Space size={16} align="center" wrap>
-                <Space size={8} align="center">
-                  <Text style={{ fontSize: 13, fontWeight: 500 }}>Auto-Review PR:</Text>
-                  <Tooltip title="Tự động bóc tách git diff và đăng nhận xét lên GitHub khi có PR mới">
-                    <Switch
-                      checked={repoMetadata.webhookActive || false}
-                      loading={togglingWebhook}
-                      onChange={handleToggleWebhook}
-                      checkedChildren="BẬT"
-                      unCheckedChildren="TẮT"
-                    />
-                  </Tooltip>
-                  {repoMetadata.webhookActive && (
-                    <Tag color="success" icon={<CheckCircleOutlined />}>
-                      Active
-                    </Tag>
-                  )}
-                </Space>
-
-                <Button size="small" type="primary" ghost icon={<AuditOutlined />} onClick={handleOpenPRReviews}>
-                  Xem AI PR Reviews
-                </Button>
-              </Space>
-            </div>
-          )}
-
-          {/* ── Không gian làm việc: Đồ thị React Flow & Trợ lý RAG ── */}
-          <Row gutter={[16, 16]}>
-            {/* Cột Trái: Bản đồ Kiến trúc Canvas */}
-            <Col xs={24} lg={16}>
-              <ArchitectureCanvas
-                graph={graph}
-                selectedNodeId={selectedFile}
-                onSelectNode={(file) => setSelectedFile(file)}
-                isDarkMode={isDarkMode}
-              />
-            </Col>
-
-            {/* Cột Phải: Trợ lý Code-Aware AI RAG & Chat Sessions (Task TS-22) */}
-            <Col xs={24} lg={8}>
-              <Card
-                title={
-                  <Space>
-                    <RobotOutlined style={{ color: '#38bdf8', fontSize: 18 }} />
-                    <span style={{ fontWeight: 600 }}>AI Code Architect</span>
-                    <Tag color="purple">Gemini 2.5 Flash</Tag>
-                  </Space>
-                }
-                extra={
-                  messages.length > 0 ? (
-                    <Popconfirm
-                      title="Xóa lịch sử đoạn chat?"
-                      description="Toàn bộ tin nhắn trước đó của dự án này sẽ được xóa trắng."
-                      onConfirm={handleClearChatHistory}
-                      okText="Xóa"
-                      cancelText="Hủy"
-                    >
                       <Button
                         size="small"
-                        type="text"
-                        icon={<ClearOutlined />}
-                        style={{ color: '#94a3b8' }}
+                        type={activeTab === 'pr_reviews' ? 'primary' : 'default'}
+                        icon={<AuditOutlined />}
+                        onClick={() => handleMenuTabClick('pr_reviews')}
                       >
-                        Xóa chat
+                        PR Review Hub
                       </Button>
-                    </Popconfirm>
-                  ) : null
-                }
-                style={{
-                  height: '75vh',
-                  background: cardBg,
-                  borderColor: cardBorder,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  boxShadow: isDarkMode
-                    ? '0 4px 20px rgba(0, 0, 0, 0.4)'
-                    : '0 2px 12px rgba(0, 0, 0, 0.05)',
-                }}
-                styles={{
-                  body: {
-                    flex: 1,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    overflow: 'hidden',
-                    padding: '12px 16px',
-                  },
-                }}
-              >
-                {selectedFile && (
-                  <div
-                    style={{
-                      marginBottom: 10,
-                      padding: '6px 10px',
-                      background: isDarkMode ? 'rgba(56, 189, 248, 0.12)' : '#e0f2fe',
-                      borderRadius: 6,
-                      border: '1px solid rgba(56, 189, 248, 0.3)',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                    }}
-                  >
-                    <Text style={{ color: isDarkMode ? '#38bdf8' : '#0284c7', fontSize: 12 }}>
-                      🎯 Ngữ cảnh ưu tiên: <strong>{selectedFile}</strong>
-                    </Text>
-                    <Button
-                      type="link"
-                      size="small"
-                      onClick={() => setSelectedFile(null)}
-                      style={{ padding: 0 }}
-                    >
-                      Bỏ chọn
-                    </Button>
+                    </Space>
                   </div>
                 )}
 
-                {/* ── Khung Hội Thoại Tin Nhắn (Cuộc trò chuyện Chatbox) ── */}
-                <div
-                  style={{
-                    flex: 1,
-                    overflowY: 'auto',
-                    marginBottom: 12,
-                    padding: '12px 10px',
-                    background: isDarkMode ? '#020617' : '#f8fafc',
-                    borderRadius: 8,
-                    border: `1px solid ${cardBorder}`,
-                  }}
-                >
-                  {messages.length === 0 ? (
-                    <div style={{ textAlign: 'center', padding: '36px 12px', color: '#94a3b8' }}>
-                      <div
-                        style={{
-                          width: 48,
-                          height: 48,
-                          borderRadius: 12,
-                          background: 'linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(124, 58, 237, 0.2))',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          margin: '0 auto 12px',
-                          color: '#38bdf8',
-                          fontSize: 24,
-                        }}
-                      >
-                        <RobotOutlined />
-                      </div>
-                      <Text strong style={{ fontSize: 14, color: isDarkMode ? '#e2e8f0' : '#1e293b' }}>
-                        Trợ lý AI CodeLens Sẵn sàng
-                      </Text>
-                      <div style={{ fontSize: 12, marginTop: 4, marginBottom: 18, color: '#94a3b8' }}>
-                        Hỏi bất kỳ điều gì về luồng nghiệp vụ, hàm hoặc kiến trúc của Repository này.
-                      </div>
-
-                      {/* Gợi ý câu hỏi nhanh */}
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 380, margin: '0 auto' }}>
-                        {[
-                          'Chức năng favorite hoạt động như thế nào?',
-                          'Luồng xác thực và phân quyền người dùng?',
-                          'Vẽ sơ đồ tương tác giữa các controllers và services?',
-                        ].map((promptText, idx) => (
-                          <Button
-                            key={idx}
-                            size="small"
-                            style={{
-                              textAlign: 'left',
-                              fontSize: 12,
-                              height: 'auto',
-                              padding: '8px 12px',
-                              whiteSpace: 'normal',
-                              background: isDarkMode ? '#1e293b' : '#ffffff',
-                              borderColor: cardBorder,
-                              borderRadius: 6,
-                            }}
-                            onClick={() => handleAskAI(promptText)}
-                          >
-                            <Space align="start">
-                              <BulbOutlined style={{ color: '#f59e0b', marginTop: 2 }} />
-                              <span>{promptText}</span>
-                            </Space>
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                      {messages.map((msg) => (
-                        <div
-                          key={msg.id}
-                          style={{
-                            display: 'flex',
-                            flexDirection: 'column',
-                            alignItems: msg.sender === 'user' ? 'flex-end' : 'flex-start',
-                          }}
-                        >
-                          <div
-                            style={{
-                              display: 'flex',
-                              alignItems: 'flex-start',
-                              flexDirection: msg.sender === 'user' ? 'row-reverse' : 'row',
-                              gap: 8,
-                              maxWidth: '92%',
-                            }}
-                          >
-                            {/* Avatar */}
-                            <div
-                              style={{
-                                width: 28,
-                                height: 28,
-                                borderRadius: '50%',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                flexShrink: 0,
-                                background:
-                                  msg.sender === 'user'
-                                    ? 'linear-gradient(135deg, #2563eb, #7c3aed)'
-                                    : isDarkMode
-                                    ? '#1e293b'
-                                    : '#e2e8f0',
-                                color: msg.sender === 'user' ? '#ffffff' : '#38bdf8',
-                                fontSize: 14,
-                              }}
-                            >
-                              {msg.sender === 'user' ? <UserOutlined /> : <RobotOutlined />}
-                            </div>
-
-                            {/* Bong bóng tin nhắn */}
-                            <div
-                              style={{
-                                padding: '10px 14px',
-                                borderRadius:
-                                  msg.sender === 'user'
-                                    ? '16px 16px 4px 16px'
-                                    : '16px 16px 16px 4px',
-                                background:
-                                  msg.sender === 'user'
-                                    ? 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)'
-                                    : isDarkMode
-                                    ? '#0f172a'
-                                    : '#ffffff',
-                                color: msg.sender === 'user' ? '#ffffff' : isDarkMode ? '#e2e8f0' : '#1e293b',
-                                border:
-                                  msg.sender === 'user'
-                                    ? 'none'
-                                    : isDarkMode
-                                    ? '1px solid #1e293b'
-                                    : '1px solid #e2e8f0',
-                                boxShadow: isDarkMode
-                                  ? '0 2px 8px rgba(0, 0, 0, 0.25)'
-                                  : '0 1px 4px rgba(0, 0, 0, 0.05)',
-                              }}
-                            >
-                              {msg.sender === 'user' ? (
-                                <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5 }}>
-                                  {msg.text}
-                                </div>
-                              ) : (
-                                <div>
-                                  <MarkdownRenderer
-                                    content={msg.text}
-                                    isStreaming={msg.isStreaming}
-                                    onCitationClick={(filePath) => setSelectedFile(filePath)}
-                                  />
-
-                                  {/* Hiển thị Citations */}
-                                  {msg.citations && msg.citations.length > 0 && (
-                                    <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px dashed #334155' }}>
-                                      <Text type="secondary" style={{ fontSize: 11 }}>
-                                        Trích dẫn nguồn AST:
-                                      </Text>
-                                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
-                                        {msg.citations.map((c, i) => (
-                                          <Tag
-                                            key={i}
-                                            color="cyan"
-                                            style={{ cursor: 'pointer', fontSize: 11 }}
-                                            onClick={() => setSelectedFile(c.filePath)}
-                                          >
-                                            {c.filePath}:L{c.startLine}-L{c.endLine}
-                                          </Tag>
-                                        ))}
-                                      </div>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                          <span
-                            style={{
-                              fontSize: 10,
-                              color: '#64748b',
-                              marginTop: 4,
-                              marginRight: msg.sender === 'user' ? 36 : 0,
-                              marginLeft: msg.sender === 'ai' ? 36 : 0,
-                            }}
-                          >
-                            {msg.timestamp}
-                          </span>
-                        </div>
-                      ))}
-                      <div ref={chatBottomRef} />
+                {/* ── Nội dung Viewport động theo 4 Tabs ── */}
+                <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                  {activeTab === 'architecture' && (
+                    <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                      <ArchitectureCanvas
+                        graph={graph}
+                        selectedNodeId={selectedFile}
+                        onSelectNode={(file) => setSelectedFile(file)}
+                        isDarkMode={isDarkMode}
+                      />
                     </div>
                   )}
+
+                  {activeTab === 'gitgraph' && (
+                    <GitGraphTab
+                      repoId={repoId}
+                      repoName={repoMetadata ? `${repoMetadata.owner}/${repoMetadata.name}` : undefined}
+                      token={token}
+                      isDarkMode={isDarkMode}
+                      onAskAIAboutBranch={handleAskAIAboutBranch}
+                    />
+                  )}
+
+                  {activeTab === 'commits' && (
+                    <CommitHistoryTab
+                      repoId={repoId}
+                      repoName={repoMetadata ? `${repoMetadata.owner}/${repoMetadata.name}` : undefined}
+                      token={token}
+                      isDarkMode={isDarkMode}
+                    />
+                  )}
+
+                  {activeTab === 'pr_reviews' && (
+                    <PRReviewHubTab
+                      repoId={repoId}
+                      repoName={repoMetadata ? `${repoMetadata.owner}/${repoMetadata.name}` : undefined}
+                      repoUrl={repoUrl}
+                      token={token}
+                      isDarkMode={isDarkMode}
+                      userUsername={user?.username}
+                      webhookActive={repoMetadata?.webhookActive || false}
+                      onToggleWebhook={handleToggleWebhook}
+                      togglingWebhook={togglingWebhook}
+                    />
+                  )}
                 </div>
+              </main>
+            )} {/* end isWorkspaceOpen conditional */}
 
-                {/* ── Ô nhập tin nhắn ── */}
-                <Space.Compact style={{ width: '100%' }}>
-                  <Input.TextArea
-                    rows={2}
-                    placeholder="Hỏi AI về mã nguồn, luồng dữ liệu..."
-                    value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleAskAI();
-                      }
-                    }}
-                    disabled={chatLoading}
-                    style={{ resize: 'none' }}
-                  />
-                  <Button
-                    type="primary"
-                    icon={chatLoading ? <SyncOutlined spin /> : <SendOutlined />}
-                    loading={chatLoading}
-                    onClick={() => handleAskAI()}
-                    style={{
-                      height: 'auto',
-                      padding: '0 20px',
-                      background: 'linear-gradient(135deg, #2563eb, #7c3aed)',
-                    }}
-                  >
-                    Gửi
-                  </Button>
-                </Space.Compact>
-              </Card>
-            </Col>
-          </Row>
-        </div>
-
-        {/* ── Drawer Lịch sử PR Reviews (Sprint 4) ── */}
-        <Drawer
-          title={
-            <Space>
-              <AuditOutlined style={{ color: '#38bdf8' }} />
-              <span>Bảng Thống kê & Lịch sử AI Review Pull Request</span>
-            </Space>
-          }
-          placement="right"
-          width={640}
-          onClose={() => setIsPRDrawerOpen(false)}
-          open={isPRDrawerOpen}
-          extra={
-            <Button
-              type="primary"
-              size="small"
-              icon={<RocketOutlined />}
-              onClick={handleSimulatePR}
-              loading={simulatingPR}
+            {/* ── 3. Khung Chat AI bên phải (Collapsible Panel) ── */}
+            <aside
+              style={{
+                width: isChatCollapsed ? 48 : (windowWidth < 1280 ? 350 : 410),
+                minWidth: isChatCollapsed ? 48 : (windowWidth < 1280 ? 350 : 410),
+                height: '100%',
+                maxHeight: '100%',
+                transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+                borderLeft: `1px solid ${cardBorder}`,
+                background: cardBg,
+                display: 'flex',
+                flexDirection: 'column',
+                flexShrink: 0,
+                position: 'relative',
+                overflow: 'hidden',
+                boxSizing: 'border-box',
+              }}
             >
-              Mô phỏng Review PR Mới
-            </Button>
-          }
-        >
-          {loadingReviews ? (
-            <div style={{ textAlign: 'center', padding: '40px 0' }}>
-              <SyncOutlined spin style={{ fontSize: 28, color: '#3b82f6' }} />
-              <Paragraph style={{ marginTop: 12 }}>Đang tải danh sách Review PR...</Paragraph>
-            </div>
-          ) : prReviews.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '60px 20px' }}>
-              <SafetyCertificateOutlined style={{ fontSize: 48, opacity: 0.6, marginBottom: 16 }} />
-              <Title level={5}>Chưa có bản ghi Review Pull Request nào</Title>
-              <Paragraph style={{ color: '#94a3b8' }}>
-                Hệ thống sẽ tự động phân tích khi GitHub gửi Webhook tới endpoint <code>POST /api/webhooks/github</code>.
-                Bạn cũng có thể bấm nút <strong>"Mô phỏng Review PR Mới"</strong> góc trên để trải nghiệm ngay!
-              </Paragraph>
-              <Button type="primary" icon={<RocketOutlined />} onClick={handleSimulatePR} loading={simulatingPR}>
-                Chạy Thử Nghiệm Ngay
-              </Button>
-            </div>
-          ) : (
-            <Space direction="vertical" size={16} style={{ width: '100%' }}>
-              {prReviews.map((rev) => {
-                const isHighRisk = rev.riskScore >= 70;
-                const isMediumRisk = rev.riskScore >= 35 && rev.riskScore < 70;
-                const badgeColor = isHighRisk ? '#ef4444' : isMediumRisk ? '#f59e0b' : '#10b981';
-
-                return (
-                  <Card
-                    key={rev._id}
-                    size="small"
+              {isChatCollapsed ? (
+                <div
+                  style={{
+                    height: '100%',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    padding: '16px 0',
+                    gap: 16,
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => setIsChatCollapsed(false)}
+                >
+                  <Tooltip title="Mở rộng Trợ lý AI" placement="left">
+                    <Button
+                      type="text"
+                      icon={<MenuUnfoldOutlined style={{ fontSize: 18, color: '#38bdf8' }} />}
+                    />
+                  </Tooltip>
+                  <RobotOutlined style={{ fontSize: 22, color: '#38bdf8' }} />
+                  <div
                     style={{
-                      background: isDarkMode ? '#1e293b' : '#f8fafc',
-                      borderColor: cardBorder,
-                      borderRadius: 10,
+                      writingMode: 'vertical-rl',
+                      letterSpacing: 2,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: '#94a3b8',
+                      marginTop: 8,
                     }}
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                      <div>
-                        <Space>
-                          <Tag color="blue">PR #{rev.prNumber}</Tag>
-                          <Text strong style={{ fontSize: 15 }}>{rev.title}</Text>
-                        </Space>
-                        <div style={{ marginTop: 4 }}>
-                          <Text type="secondary" style={{ fontSize: 12 }}>
-                            Tác giả: <strong>@{rev.author}</strong> • Trạng thái: <Tag color="green">{rev.status}</Tag>
-                          </Text>
-                        </div>
-                      </div>
-
-                      <div style={{ textAlign: 'right' }}>
-                        <Badge
-                          count={`Risk: ${rev.riskScore}/100`}
-                          style={{
-                            backgroundColor: badgeColor,
-                            fontWeight: 700,
-                            padding: '0 10px',
-                            fontSize: 13,
-                          }}
+                    TRỢ LÝ AI CODELENS
+                  </div>
+                </div>
+              ) : (
+                <Card
+                  title={
+                    <Space style={{ minWidth: 0, overflow: 'hidden', maxWidth: '100%' }} size={6}>
+                      <RobotOutlined style={{ color: '#38bdf8', fontSize: 18, flexShrink: 0 }} />
+                      <span
+                        style={{
+                          fontWeight: 600,
+                          fontSize: 14,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {persona.title}
+                      </span>
+                      <Tag color={persona.color} style={{ fontSize: 10, margin: 0, flexShrink: 0 }}>
+                        {persona.tag}
+                      </Tag>
+                    </Space>
+                  }
+                  extra={
+                    <Space size={4} style={{ flexShrink: 0 }}>
+                      {messages.length > 0 && (
+                        <>
+                          <Tooltip title="Mở Analysis Workspace">
+                            <Button
+                              size="small"
+                              type="text"
+                              icon={<ExpandAltOutlined style={{ fontSize: 13 }} />}
+                              onClick={() => {
+                                const lastAI = messages.filter((m) => m.sender === 'ai' && m.text).at(-1);
+                                if (lastAI) handleOpenWorkspace(lastAI.id, 'explanation');
+                                else setIsWorkspaceOpen(true);
+                              }}
+                              style={{ color: '#38bdf8', padding: '0 4px' }}
+                            >
+                              Workspace
+                            </Button>
+                          </Tooltip>
+                          <Popconfirm
+                            title="Xóa lịch sử đoạn chat?"
+                            description="Toàn bộ tin nhắn trước đó của dự án này sẽ được xóa trắng."
+                            onConfirm={handleClearChatHistory}
+                            okText="Xóa"
+                            cancelText="Hủy"
+                          >
+                            <Button
+                              size="small"
+                              type="text"
+                              icon={<ClearOutlined />}
+                              style={{ color: '#94a3b8', padding: '0 4px' }}
+                            >
+                              Xóa
+                            </Button>
+                          </Popconfirm>
+                        </>
+                      )}
+                      <Tooltip title="Thu gọn Trợ lý AI">
+                        <Button
+                          size="small"
+                          type="text"
+                          icon={<MenuFoldOutlined style={{ fontSize: 16 }} />}
+                          onClick={() => setIsChatCollapsed(true)}
+                          style={{ padding: '0 4px' }}
                         />
-                      </div>
+                      </Tooltip>
+                    </Space>
+                  }
+                  style={{
+                    height: '100%',
+                    minHeight: 0,
+                    minWidth: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    borderRadius: 0,
+                    border: 'none',
+                    background: cardBg,
+                    boxSizing: 'border-box',
+                  }}
+                  styles={{
+                    header: {
+                      padding: '0 12px',
+                      minHeight: 48,
+                      flexShrink: 0,
+                      borderBottom: `1px solid ${cardBorder}`,
+                      overflow: 'hidden',
+                    },
+                    body: {
+                      flex: 1,
+                      minHeight: 0,
+                      minWidth: 0,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      overflow: 'hidden',
+                      padding: '12px 14px',
+                      boxSizing: 'border-box',
+                    },
+                  }}
+                >
+                  {selectedFile && (
+                    <div
+                      style={{
+                        marginBottom: 10,
+                        padding: '6px 10px',
+                        background: isDarkMode ? 'rgba(56, 189, 248, 0.12)' : '#e0f2fe',
+                        borderRadius: 6,
+                        border: '1px solid rgba(56, 189, 248, 0.3)',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <Text style={{ color: isDarkMode ? '#38bdf8' : '#0284c7', fontSize: 12 }}>
+                        🎯 Ngữ cảnh ưu tiên: <strong>{selectedFile}</strong>
+                      </Text>
+                      <Button
+                        type="link"
+                        size="small"
+                        onClick={() => setSelectedFile(null)}
+                        style={{ padding: 0 }}
+                      >
+                        Bỏ chọn
+                      </Button>
                     </div>
+                  )}
 
-                    <Divider style={{ margin: '12px 0' }} />
-
-                    {/* Summary */}
-                    <Paragraph style={{ fontSize: 13, marginBottom: 10 }}>
-                      <strong>📝 Tóm tắt:</strong> {rev.summary}
-                    </Paragraph>
-
-                    {/* Cross-file Impact */}
-                    {rev.impactedFiles && rev.impactedFiles.length > 0 && (
-                      <div style={{ marginBottom: 10 }}>
-                        <Text strong style={{ fontSize: 12, color: '#f59e0b' }}>
-                          ⚠️ Module phụ thuộc bị ảnh hưởng ({rev.impactedFiles.length}):
+                  {/* Khung Hội Thoại Tin Nhắn */}
+                  <div
+                    ref={chatMessagesContainerRef}
+                    style={{
+                      flex: 1,
+                      minHeight: 0,
+                      minWidth: 0,
+                      overflowY: 'auto',
+                      overflowX: 'hidden',
+                      marginBottom: 12,
+                      padding: '12px 10px',
+                      background: isDarkMode ? '#020617' : '#f8fafc',
+                      borderRadius: 8,
+                      border: `1px solid ${cardBorder}`,
+                      boxSizing: 'border-box',
+                    }}
+                  >
+                    {messages.length === 0 ? (
+                      <div style={{ textAlign: 'center', padding: '36px 12px', color: '#94a3b8' }}>
+                        <div
+                          style={{
+                            width: 48,
+                            height: 48,
+                            borderRadius: 12,
+                            background:
+                              'linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(124, 58, 237, 0.2))',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            margin: '0 auto 12px',
+                            color: '#38bdf8',
+                            fontSize: 24,
+                          }}
+                        >
+                          <RobotOutlined />
+                        </div>
+                        <Text strong style={{ fontSize: 14, color: isDarkMode ? '#e2e8f0' : '#1e293b' }}>
+                          {persona.title}
                         </Text>
-                        <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                          {rev.impactedFiles.map((f: string) => (
-                            <Tag key={f} color="warning" style={{ fontSize: 11 }}>{f}</Tag>
+                        <div style={{ fontSize: 12, marginTop: 4, marginBottom: 18, color: '#94a3b8' }}>
+                          Vai trò: <strong>{persona.role}</strong>. Hãy đặt bất kỳ câu hỏi nào về mã nguồn, nhánh hoặc Pull Request!
+                        </div>
+
+                        {/* Gợi ý câu hỏi nhanh */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 380, margin: '0 auto' }}>
+                          {[
+                            activeTab === 'architecture'
+                              ? 'Vẽ sơ đồ tương tác giữa các controllers và services?'
+                              : activeTab === 'gitgraph'
+                                ? 'Giải thích cấu trúc phân nhánh và các tính năng đang phát triển?'
+                                : activeTab === 'commits'
+                                  ? 'Tóm tắt các commit mới nhất và tác động lên hệ thống?'
+                                  : 'Những rủi ro bảo mật chính trong các Pull Request gần đây?',
+                            'Chức năng favorite hoạt động như thế nào?',
+                            'Luồng xác thực và phân quyền người dùng?',
+                          ].map((promptText, idx) => (
+                            <Button
+                              key={idx}
+                              size="small"
+                              style={{
+                                textAlign: 'left',
+                                fontSize: 12,
+                                height: 'auto',
+                                padding: '8px 12px',
+                                whiteSpace: 'normal',
+                                background: isDarkMode ? '#1e293b' : '#ffffff',
+                                borderColor: cardBorder,
+                                borderRadius: 6,
+                              }}
+                              onClick={() => handleAskAI(promptText)}
+                            >
+                              <Space align="start">
+                                <BulbOutlined style={{ color: '#f59e0b', marginTop: 2 }} />
+                                <span>{promptText}</span>
+                              </Space>
+                            </Button>
                           ))}
                         </div>
                       </div>
-                    )}
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                        {messages.map((msg) => (
+                          <div
+                            key={msg.id}
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: msg.sender === 'user' ? 'flex-end' : 'flex-start',
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'flex-start',
+                                flexDirection: msg.sender === 'user' ? 'row-reverse' : 'row',
+                                gap: 8,
+                                maxWidth: '100%',
+                                minWidth: 0,
+                                boxSizing: 'border-box',
+                              }}
+                            >
+                              {/* Avatar */}
+                              <div
+                                style={{
+                                  width: 28,
+                                  height: 28,
+                                  borderRadius: '50%',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  flexShrink: 0,
+                                  background:
+                                    msg.sender === 'user'
+                                      ? 'linear-gradient(135deg, #2563eb, #7c3aed)'
+                                      : isDarkMode
+                                        ? '#1e293b'
+                                        : '#e2e8f0',
+                                  color: msg.sender === 'user' ? '#ffffff' : '#38bdf8',
+                                  fontSize: 14,
+                                }}
+                              >
+                                {msg.sender === 'user' ? <UserOutlined /> : <RobotOutlined />}
+                              </div>
 
-                    {/* Issues detected */}
-                    {rev.issues && rev.issues.length > 0 && (
-                      <Collapse
-                        size="small"
-                        ghost
-                        items={[
-                          {
-                            key: 'issues',
-                            label: (
-                              <Space>
-                                <ExclamationCircleOutlined style={{ color: '#ef4444' }} />
-                                <Text strong>Phát hiện {rev.issues.length} vấn đề cần lưu ý</Text>
-                              </Space>
-                            ),
-                            children: (
-                              <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                                {rev.issues.map((issue: any, idx: number) => (
-                                  <div
-                                    key={idx}
-                                    style={{
-                                      padding: 8,
-                                      borderRadius: 6,
-                                      background: isDarkMode ? '#0f172a' : '#ffffff',
-                                      border: `1px solid ${cardBorder}`,
-                                    }}
-                                  >
-                                    <Space style={{ marginBottom: 4 }}>
-                                      <Tag color={issue.severity === 'CRITICAL' ? 'red' : issue.severity === 'HIGH' ? 'volcano' : 'orange'}>
-                                        {issue.severity}
-                                      </Tag>
-                                      <Text strong style={{ fontSize: 12 }}>{issue.filePath}:{issue.lineNumber}</Text>
-                                    </Space>
-                                    <div style={{ fontSize: 12, color: isDarkMode ? '#cbd5e1' : '#475569' }}>
-                                      {issue.message}
-                                    </div>
-                                    {issue.suggestedFix && (
-                                      <pre
+                              {/* Bong bóng tin nhắn */}
+                              <div
+                                style={{
+                                  padding: '10px 14px',
+                                  borderRadius:
+                                    msg.sender === 'user'
+                                      ? '16px 16px 4px 16px'
+                                      : '16px 16px 16px 4px',
+                                  background:
+                                    msg.sender === 'user'
+                                      ? 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)'
+                                      : isDarkMode
+                                        ? '#0f172a'
+                                        : '#ffffff',
+                                  color: msg.sender === 'user' ? '#ffffff' : isDarkMode ? '#e2e8f0' : '#1e293b',
+                                  border:
+                                    msg.sender === 'user'
+                                      ? 'none'
+                                      : isDarkMode
+                                        ? '1px solid #1e293b'
+                                        : '1px solid #e2e8f0',
+                                  boxShadow: isDarkMode
+                                    ? '0 2px 8px rgba(0, 0, 0, 0.25)'
+                                    : '0 1px 4px rgba(0, 0, 0, 0.05)',
+                                  maxWidth: 'calc(100% - 36px)',
+                                  minWidth: 0,
+                                  wordBreak: 'break-word',
+                                  overflowWrap: 'break-word',
+                                  boxSizing: 'border-box',
+                                }}
+                              >
+                                {msg.sender === 'user' ? (
+                                  <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5, wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                    {msg.text}
+                                  </div>
+                                ) : (
+                                  <div>
+                                    <MarkdownRenderer
+                                      content={msg.text}
+                                      isStreaming={msg.isStreaming}
+                                      onCitationClick={(filePath) => setSelectedFile(filePath)}
+                                      onOpenWorkspace={(code) => handleOpenWorkspace(msg.id, 'diagram')}
+                                    />
+
+                                    {/* Hiển thị Citations */}
+                                    {msg.citations && msg.citations.length > 0 && (
+                                      <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px dashed #334155' }}>
+                                        <Text type="secondary" style={{ fontSize: 11 }}>
+                                          Trích dẫn nguồn AST:
+                                        </Text>
+                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+                                          {msg.citations.map((c, i) => (
+                                            <Tag
+                                              key={i}
+                                              color="cyan"
+                                              style={{
+                                                cursor: 'pointer',
+                                                fontSize: 11,
+                                                maxWidth: '100%',
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap',
+                                              }}
+                                              onClick={() => setSelectedFile(c.filePath)}
+                                            >
+                                              {c.filePath}:L{c.startLine}-L{c.endLine}
+                                            </Tag>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {/* Nút mở Workspace (hiển thị sau khi streaming xong) */}
+                                    {!msg.isStreaming && msg.text && (
+                                      <div
                                         style={{
-                                          margin: '6px 0 0',
-                                          padding: 6,
-                                          fontSize: 11,
-                                          background: isDarkMode ? '#020617' : '#f1f5f9',
-                                          borderRadius: 4,
-                                          overflowX: 'auto',
+                                          marginTop: 8,
+                                          paddingTop: 6,
+                                          borderTop: `1px solid ${isDarkMode ? '#1e293b' : '#f1f5f9'}`,
+                                          display: 'flex',
+                                          gap: 4,
+                                          flexWrap: 'wrap',
                                         }}
                                       >
-                                        <code>{issue.suggestedFix}</code>
-                                      </pre>
+                                        <Button
+                                          size="small"
+                                          type="text"
+                                          icon={<ExpandAltOutlined style={{ fontSize: 11 }} />}
+                                          onClick={() => handleOpenWorkspace(msg.id, 'explanation')}
+                                          style={{
+                                            fontSize: 11,
+                                            padding: '0 6px',
+                                            height: 22,
+                                            color: '#38bdf8',
+                                          }}
+                                        >
+                                          Giải thích
+                                        </Button>
+                                        {extractMermaidFromText(msg.text) && (
+                                          <Button
+                                            size="small"
+                                            type="text"
+                                            icon={<ApartmentIcon style={{ fontSize: 11 }} />}
+                                            onClick={() => handleOpenWorkspace(msg.id, 'diagram')}
+                                            style={{
+                                              fontSize: 11,
+                                              padding: '0 6px',
+                                              height: 22,
+                                              color: '#a78bfa',
+                                            }}
+                                          >
+                                            Biểu đồ
+                                          </Button>
+                                        )}
+                                      </div>
                                     )}
                                   </div>
-                                ))}
-                              </Space>
-                            ),
-                          },
-                        ]}
-                      />
-                    )}
-
-                    {rev.githubCommentUrl && (
-                      <div style={{ marginTop: 10, textAlign: 'right' }}>
-                        <Button
-                          type="link"
-                          size="small"
-                          icon={<GithubOutlined />}
-                          href={rev.githubCommentUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Xem Comment trên GitHub PR
-                        </Button>
+                                )}
+                              </div>
+                            </div>
+                            <span
+                              style={{
+                                fontSize: 10,
+                                color: '#64748b',
+                                marginTop: 4,
+                                marginRight: msg.sender === 'user' ? 36 : 0,
+                                marginLeft: msg.sender === 'ai' ? 36 : 0,
+                              }}
+                            >
+                              {msg.timestamp}
+                            </span>
+                          </div>
+                        ))}
+                        <div ref={chatBottomRef} />
                       </div>
                     )}
-                  </Card>
-                );
-              })}
-            </Space>
-          )}
-        </Drawer>
+                  </div>
+
+                  {/* Ô nhập tin nhắn */}
+                  <Space.Compact style={{ width: '100%', flexShrink: 0 }}>
+                    <Input.TextArea
+                      rows={2}
+                      placeholder={`Hỏi ${persona.title} về ${persona.tag.toLowerCase()}...`}
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleAskAI();
+                        }
+                      }}
+                      disabled={chatLoading}
+                      style={{ resize: 'none' }}
+                    />
+                    <Button
+                      type="primary"
+                      icon={chatLoading ? <SyncOutlined spin /> : <SendOutlined />}
+                      loading={chatLoading}
+                      onClick={() => handleAskAI()}
+                      style={{
+                        height: 'auto',
+                        padding: '0 20px',
+                        background: 'linear-gradient(135deg, #2563eb, #7c3aed)',
+                      }}
+                    >
+                      Gửi
+                    </Button>
+                  </Space.Compact>
+                </Card>
+              )}
+            </aside>
+          </div>
+        </div>
       </div>
     </ConfigProvider>
   );

@@ -4,8 +4,8 @@ import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import MermaidDiagram from './MermaidDiagram';
-import { Tag, Tooltip, Typography } from 'antd';
-import { CodeOutlined, CopyOutlined, CheckOutlined } from '@ant-design/icons';
+import { Button, Tag, Tooltip, Typography } from 'antd';
+import { ApartmentOutlined, CodeOutlined, CopyOutlined, CheckOutlined, ExpandAltOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
 
@@ -14,6 +14,8 @@ interface MarkdownRendererProps {
   isDarkMode?: boolean;
   isStreaming?: boolean;
   onCitationClick?: (filePath: string) => void;
+  /** When provided, mermaid blocks render as a compact preview card instead of the full diagram */
+  onOpenWorkspace?: (mermaidCode: string) => void;
 }
 
 export default function MarkdownRenderer({
@@ -21,6 +23,7 @@ export default function MarkdownRenderer({
   isDarkMode = true,
   isStreaming = false,
   onCitationClick,
+  onOpenWorkspace,
 }: MarkdownRendererProps) {
   const [copiedCode, setCopiedCode] = React.useState<string | null>(null);
 
@@ -37,6 +40,10 @@ export default function MarkdownRenderer({
         lineHeight: 1.65,
         color: isDarkMode ? '#e2e8f0' : '#1e293b',
         wordBreak: 'break-word',
+        overflowWrap: 'break-word',
+        minWidth: 0,
+        maxWidth: '100%',
+        boxSizing: 'border-box',
       }}
     >
       <ReactMarkdown
@@ -101,6 +108,51 @@ export default function MarkdownRenderer({
 
             // ── Khối mã Mermaid (Sequence / Flowchart Diagram) ──
             if (lang === 'mermaid') {
+              // Sidebar compact preview mode: show a card instead of the full diagram
+              if (onOpenWorkspace) {
+                return (
+                  <div
+                    style={{
+                      margin: '10px 0',
+                      padding: '10px 14px',
+                      borderRadius: 8,
+                      border: `1px dashed ${isDarkMode ? '#334155' : '#cbd5e1'}`,
+                      background: isDarkMode ? 'rgba(124,58,237,0.07)' : 'rgba(37,99,235,0.04)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                      <ApartmentOutlined style={{ color: '#a78bfa', fontSize: 16, flexShrink: 0 }} />
+                      <div style={{ minWidth: 0 }}>
+                        <Text style={{ fontSize: 12, color: isDarkMode ? '#c4b5fd' : '#7c3aed', fontWeight: 600, display: 'block' }}>
+                          Biểu đồ kiến trúc
+                        </Text>
+                        <Text style={{ fontSize: 11, color: isDarkMode ? '#64748b' : '#94a3b8' }}>
+                          Mở Workspace để xem toàn màn hình
+                        </Text>
+                      </div>
+                    </div>
+                    <Button
+                      size="small"
+                      type="default"
+                      icon={<ExpandAltOutlined />}
+                      onClick={() => onOpenWorkspace(codeString)}
+                      style={{
+                        flexShrink: 0,
+                        fontSize: 11,
+                        color: '#a78bfa',
+                        borderColor: isDarkMode ? '#334155' : '#c4b5fd',
+                        background: isDarkMode ? 'rgba(124,58,237,0.12)' : 'rgba(124,58,237,0.06)',
+                      }}
+                    >
+                      Mở
+                    </Button>
+                  </div>
+                );
+              }
               return <MermaidDiagram code={codeString} isDarkMode={isDarkMode} isStreaming={isStreaming} />;
             }
 
@@ -114,6 +166,8 @@ export default function MarkdownRenderer({
                     borderRadius: 8,
                     overflow: 'hidden',
                     border: isDarkMode ? '1px solid #334155' : '1px solid #cbd5e1',
+                    maxWidth: '100%',
+                    boxSizing: 'border-box',
                   }}
                 >
                   <div
@@ -155,6 +209,8 @@ export default function MarkdownRenderer({
                       fontSize: 12,
                       lineHeight: 1.5,
                       overflowX: 'auto',
+                      maxWidth: '100%',
+                      boxSizing: 'border-box',
                     }}
                   >
                     <code className={className} {...rest}>
@@ -182,6 +238,10 @@ export default function MarkdownRenderer({
                       margin: '0 2px',
                       fontWeight: 500,
                       borderRadius: 4,
+                      maxWidth: '100%',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
                     }}
                     onClick={() => onCitationClick && onCitationClick(filePath)}
                   >

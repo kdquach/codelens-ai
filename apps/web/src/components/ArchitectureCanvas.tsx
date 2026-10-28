@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import {
   ReactFlow,
   Background,
@@ -13,10 +13,12 @@ import {
   Edge,
   Panel,
   NodeProps,
+  useNodesState,
+  useEdgesState,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { ArchitectureGraph, GraphNode, NodeCategory } from '@codelens/shared';
-import { Input, Tag, Space, Empty, Tooltip } from 'antd';
+import { Input, Tag, Space, Empty, Tooltip, Button, Segmented, Modal, Typography, message as antMessage } from 'antd';
 import {
   SearchOutlined,
   ApiOutlined,
@@ -25,7 +27,18 @@ import {
   AppstoreOutlined,
   ToolOutlined,
   CodeOutlined,
+  UndoOutlined,
+  ApartmentOutlined,
+  BranchesOutlined,
+  FireOutlined,
+  CopyOutlined,
+  CheckOutlined,
+  FolderOpenOutlined,
 } from '@ant-design/icons';
+
+const { Text, Paragraph } = Typography;
+
+export type DiagramViewMode = 'layered' | 'flow' | 'cluster' | 'data_model' | 'complexity';
 
 interface Props {
   graph: ArchitectureGraph;
@@ -89,17 +102,61 @@ export const CATEGORY_CONFIG: Record<
   },
 };
 
-// ── Custom Node Component hỗ trợ cả Light & Dark Theme ──
+// ── Custom Node Component hỗ trợ đa góc nhìn ──
 interface CustomNodeData {
   graphNode: GraphNode;
   isSelected: boolean;
   isDarkMode: boolean;
+  viewMode: DiagramViewMode;
+  inDegree: number;
+  outDegree: number;
+  clusterName?: string;
 }
 
 const CustomArchitectureNode = ({ data }: NodeProps) => {
   const nodeData = data as unknown as CustomNodeData;
-  const { graphNode, isSelected, isDarkMode } = nodeData;
+  const { graphNode, isSelected, isDarkMode, viewMode, inDegree, outDegree, clusterName } = nodeData;
   const config = CATEGORY_CONFIG[graphNode.category] || CATEGORY_CONFIG.other;
+
+  // Đổi màu viền và nền theo chế độ xem
+  let borderColor = isSelected ? '#3b82f6' : isDarkMode ? config.border : config.color;
+  let customBadge: React.ReactNode = null;
+
+  if (viewMode === 'complexity') {
+    const loc = graphNode.loc || 0;
+    const isHeavy = loc > 300;
+    const isMedium = loc >= 100 && loc <= 300;
+    const heatColor = isHeavy ? '#ef4444' : isMedium ? '#f59e0b' : '#10b981';
+    borderColor = isSelected ? '#38bdf8' : heatColor;
+    customBadge = (
+      <span
+        style={{
+          fontSize: 9,
+          fontWeight: 700,
+          color: heatColor,
+          background: isDarkMode ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.06)',
+          padding: '1px 5px',
+          borderRadius: 4,
+        }}
+      >
+        {isHeavy ? '🔥 Phức tạp cao' : isMedium ? '⚡ Trung bình' : '✨ Gọn gàng'}
+      </span>
+    );
+  } else if (viewMode === 'data_model' && graphNode.category === 'model') {
+    borderColor = '#fbbf24';
+    customBadge = (
+      <span style={{ fontSize: 9, fontWeight: 700, color: '#f59e0b' }}>
+        ENTITY
+      </span>
+    );
+  } else if (viewMode === 'cluster' && clusterName) {
+    customBadge = (
+      <span style={{ fontSize: 9, color: isDarkMode ? '#94a3b8' : '#64748b' }}>
+        <FolderOpenOutlined style={{ marginRight: 3 }} />
+        {clusterName}
+      </span>
+    );
+  }
 
   const bgColor = isDarkMode
     ? isSelected
@@ -108,12 +165,6 @@ const CustomArchitectureNode = ({ data }: NodeProps) => {
     : isSelected
     ? '#eff6ff'
     : '#ffffff';
-
-  const borderColor = isSelected
-    ? '#3b82f6'
-    : isDarkMode
-    ? config.border
-    : config.color;
 
   const textColor = isDarkMode ? '#f8fafc' : '#0f172a';
   const subTextColor = isDarkMode ? '#94a3b8' : '#64748b';
@@ -137,7 +188,6 @@ const CustomArchitectureNode = ({ data }: NodeProps) => {
         position: 'relative',
       }}
     >
-      {/* 4 Cổng kết nối (Handles) đa hướng giúp mũi tên kết nối tự nhiên */}
       <Handle
         type="target"
         position={Position.Top}
@@ -163,7 +213,7 @@ const CustomArchitectureNode = ({ data }: NodeProps) => {
         style={{ background: config.color, width: 8, height: 8 }}
       />
 
-      {/* Header: Category Badge + LOC */}
+      {/* Header: Category Badge + Extra Tag */}
       <div
         style={{
           display: 'flex',
@@ -186,18 +236,20 @@ const CustomArchitectureNode = ({ data }: NodeProps) => {
           {config.icon}
           {graphNode.category}
         </span>
-        <span
-          style={{
-            fontSize: 10,
-            color: subTextColor,
-            background: isDarkMode ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)',
-            padding: '1px 6px',
-            borderRadius: 4,
-            fontWeight: 500,
-          }}
-        >
-          {graphNode.loc} LOC
-        </span>
+        {customBadge || (
+          <span
+            style={{
+              fontSize: 10,
+              color: subTextColor,
+              background: isDarkMode ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)',
+              padding: '1px 6px',
+              borderRadius: 4,
+              fontWeight: 500,
+            }}
+          >
+            {graphNode.loc} LOC
+          </span>
+        )}
       </div>
 
       {/* Tên file (Label) */}
@@ -216,18 +268,23 @@ const CustomArchitectureNode = ({ data }: NodeProps) => {
         </div>
       </Tooltip>
 
-      {/* Đường dẫn rút gọn */}
+      {/* Đường dẫn rút gọn & Thống kê liên kết */}
       <div
         style={{
-          fontSize: 11,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginTop: 4,
+          fontSize: 10,
           color: subTextColor,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          marginTop: 2,
         }}
       >
-        {graphNode.id}
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 }}>
+          {graphNode.id}
+        </span>
+        <span>
+          {inDegree + outDegree > 0 ? `${inDegree} vào • ${outDegree} ra` : ''}
+        </span>
       </div>
     </div>
   );
@@ -237,6 +294,25 @@ const nodeTypes = {
   architectureNode: CustomArchitectureNode,
 };
 
+// ── Tự động tạo mã Mermaid từ Đồ thị AST ──
+function generateMermaidCode(graph: ArchitectureGraph): string {
+  if (!graph.nodes || graph.nodes.length === 0) return 'graph TD\n  Empty[Chưa có dữ liệu đồ thị]';
+  const lines: string[] = ['flowchart TD'];
+
+  // Định nghĩa các node
+  const safeId = (id: string) => id.replace(/[^a-zA-Z0-9_]/g, '_');
+  graph.nodes.forEach((n) => {
+    lines.push(`  ${safeId(n.id)}["${n.label} (${n.category})"]`);
+  });
+
+  // Định nghĩa các liên kết
+  (graph.edges || []).forEach((e) => {
+    lines.push(`  ${safeId(e.source)} --> ${safeId(e.target)}`);
+  });
+
+  return lines.join('\n');
+}
+
 export default function ArchitectureCanvas({
   graph,
   selectedNodeId,
@@ -245,70 +321,274 @@ export default function ArchitectureCanvas({
 }: Props) {
   const [searchTerm, setSearchTerm] = useState('');
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<DiagramViewMode>('layered');
+  const [isMermaidModalOpen, setIsMermaidModalOpen] = useState(false);
+  const [hasCopiedMermaid, setHasCopiedMermaid] = useState(false);
 
-  // ── Tính toán layout phân tầng tự động (Layered Architecture Layout) ──
-  const { nodes, edges } = useMemo(() => {
+  // Tính bậc liên kết (In-degree & Out-degree)
+  const { inDegreeMap, outDegreeMap } = useMemo(() => {
+    const inMap: Record<string, number> = {};
+    const outMap: Record<string, number> = {};
+    (graph.nodes || []).forEach((n) => {
+      inMap[n.id] = 0;
+      outMap[n.id] = 0;
+    });
+    (graph.edges || []).forEach((e) => {
+      if (outMap[e.source] !== undefined) outMap[e.source]++;
+      if (inMap[e.target] !== undefined) inMap[e.target]++;
+    });
+    return { inDegreeMap: inMap, outDegreeMap: outMap };
+  }, [graph]);
+
+  // ── Tính toán vị trí các Node theo từng Loại biểu đồ (Multi-view Layout Engine) ──
+  const initialElements = useMemo(() => {
     if (!graph.nodes || graph.nodes.length === 0) {
       return { nodes: [], edges: [] };
     }
 
-    const categoryOrder: NodeCategory[] = [
-      'controller',
-      'service',
-      'model',
-      'component',
-      'util',
-      'other',
-    ];
-
-    const categoryLayers: Record<NodeCategory, GraphNode[]> = {
-      controller: [],
-      service: [],
-      model: [],
-      component: [],
-      util: [],
-      other: [],
-    };
-
-    graph.nodes.forEach((node) => {
-      const cat = node.category || 'other';
-      if (categoryLayers[cat]) {
-        categoryLayers[cat].push(node);
-      } else {
-        categoryLayers.other.push(node);
-      }
-    });
-
     const calculatedNodes: Node[] = [];
     const NODE_WIDTH = 240;
-    const NODE_HEIGHT = 100;
+    const NODE_HEIGHT = 90;
     const GAP_X = 60;
-    const GAP_Y = 140;
+    const GAP_Y = 120;
 
-    let currentY = 50;
+    // Helper kiểm tra hiển thị theo bộ lọc tìm kiếm & category
+    const isNodeVisible = (node: GraphNode) => {
+      const matchesSearch =
+        !searchTerm ||
+        node.label.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        node.id.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesCategory = !activeCategory || node.category === activeCategory;
+      return matchesSearch && matchesCategory;
+    };
 
-    categoryOrder.forEach((category) => {
-      const groupNodes = categoryLayers[category];
-      if (groupNodes.length === 0) return;
+    // ──────────────────────────────────────────────────────────
+    // 1. Chế độ Phân tầng (Layered Stack)
+    // ──────────────────────────────────────────────────────────
+    if (viewMode === 'layered') {
+      const categoryOrder: NodeCategory[] = [
+        'controller',
+        'service',
+        'model',
+        'component',
+        'util',
+        'other',
+      ];
+      const categoryLayers: Record<NodeCategory, GraphNode[]> = {
+        controller: [],
+        service: [],
+        model: [],
+        component: [],
+        util: [],
+        other: [],
+      };
+      graph.nodes.forEach((n) => {
+        const cat = n.category || 'other';
+        (categoryLayers[cat] || categoryLayers.other).push(n);
+      });
 
-      const itemsPerRow = Math.min(Math.max(groupNodes.length, 3), 5);
+      let currentY = 50;
+      categoryOrder.forEach((cat) => {
+        const group = categoryLayers[cat];
+        if (group.length === 0) return;
+        const perRow = Math.min(Math.max(group.length, 3), 5);
+        group.forEach((node, idx) => {
+          const col = idx % perRow;
+          const row = Math.floor(idx / perRow);
+          const x = 50 + col * (NODE_WIDTH + GAP_X);
+          const y = currentY + row * (NODE_HEIGHT + GAP_Y);
+          const visible = isNodeVisible(node);
 
-      groupNodes.forEach((node, index) => {
-        const col = index % itemsPerRow;
-        const row = Math.floor(index / itemsPerRow);
+          calculatedNodes.push({
+            id: node.id,
+            type: 'architectureNode',
+            position: { x, y },
+            data: {
+              graphNode: node,
+              isSelected: selectedNodeId === node.id,
+              isDarkMode,
+              viewMode,
+              inDegree: inDegreeMap[node.id] || 0,
+              outDegree: outDegreeMap[node.id] || 0,
+            },
+            style: { opacity: visible ? 1 : 0.2, transition: 'opacity 0.2s ease' },
+          });
+        });
+        const rows = Math.ceil(group.length / perRow);
+        currentY += rows * (NODE_HEIGHT + GAP_Y) + 30;
+      });
+    }
 
-        const x = 50 + col * (NODE_WIDTH + GAP_X);
-        const y = currentY + row * (NODE_HEIGHT + GAP_Y);
+    // ──────────────────────────────────────────────────────────
+    // 2. Chế độ Luồng có hướng (Directed DAG Flowchart)
+    // ──────────────────────────────────────────────────────────
+    else if (viewMode === 'flow') {
+      // Tính Rank tầng theo Topological DAG
+      const ranks: Record<string, number> = {};
+      const adj: Record<string, string[]> = {};
+      graph.nodes.forEach((n) => {
+        adj[n.id] = [];
+      });
+      (graph.edges || []).forEach((e) => {
+        if (adj[e.source]) adj[e.source].push(e.target);
+      });
 
-        const matchesSearch =
-          !searchTerm ||
-          node.label.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          node.id.toLowerCase().includes(searchTerm.toLowerCase());
+      // Entry points: Controller hoặc inDegree = 0
+      const queue: string[] = [];
+      graph.nodes.forEach((n) => {
+        if ((inDegreeMap[n.id] || 0) === 0 || n.category === 'controller') {
+          queue.push(n.id);
+          ranks[n.id] = 0;
+        }
+      });
+      if (queue.length === 0 && graph.nodes.length > 0) {
+        queue.push(graph.nodes[0].id);
+        ranks[graph.nodes[0].id] = 0;
+      }
 
-        const matchesCategory =
-          !activeCategory || node.category === activeCategory;
+      while (queue.length > 0) {
+        const curr = queue.shift()!;
+        const currRank = ranks[curr] || 0;
+        for (const next of adj[curr] || []) {
+          if (ranks[next] === undefined || ranks[next] < currRank + 1) {
+            ranks[next] = currRank + 1;
+            queue.push(next);
+          }
+        }
+      }
 
-        const isDimmed = !matchesSearch || !matchesCategory;
+      // Xếp vào từng tầng Rank
+      const rankLayers: Record<number, GraphNode[]> = {};
+      graph.nodes.forEach((n) => {
+        const r = ranks[n.id] || 0;
+        if (!rankLayers[r]) rankLayers[r] = [];
+        rankLayers[r].push(n);
+      });
+
+      const sortedRanks = Object.keys(rankLayers).map(Number).sort((a, b) => a - b);
+      sortedRanks.forEach((r) => {
+        const group = rankLayers[r];
+        const perRow = 4;
+        group.forEach((node, idx) => {
+          const col = idx % perRow;
+          const row = Math.floor(idx / perRow);
+          const x = 60 + col * (NODE_WIDTH + GAP_X);
+          const y = 50 + r * (NODE_HEIGHT + GAP_Y * 1.2) + row * (NODE_HEIGHT + 30);
+          const visible = isNodeVisible(node);
+
+          calculatedNodes.push({
+            id: node.id,
+            type: 'architectureNode',
+            position: { x, y },
+            data: {
+              graphNode: node,
+              isSelected: selectedNodeId === node.id,
+              isDarkMode,
+              viewMode,
+              inDegree: inDegreeMap[node.id] || 0,
+              outDegree: outDegreeMap[node.id] || 0,
+            },
+            style: { opacity: visible ? 1 : 0.2, transition: 'opacity 0.2s ease' },
+          });
+        });
+      });
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // 3. Chế độ Gom cụm Thư mục / Module (Clustered Module View)
+    // ──────────────────────────────────────────────────────────
+    else if (viewMode === 'cluster') {
+      const getCluster = (path: string) => {
+        const parts = path.split('/');
+        if (parts.length > 1) {
+          // Lấy folder ngay dưới apps/server/src hoặc src/
+          const srcIdx = parts.indexOf('src');
+          if (srcIdx !== -1 && parts[srcIdx + 1]) {
+            return parts[srcIdx + 1];
+          }
+          return parts[0];
+        }
+        return 'root';
+      };
+
+      const clusters: Record<string, GraphNode[]> = {};
+      graph.nodes.forEach((n) => {
+        const cl = getCluster(n.id);
+        if (!clusters[cl]) clusters[cl] = [];
+        clusters[cl].push(n);
+      });
+
+      const clusterKeys = Object.keys(clusters);
+      const clustersPerRow = 3;
+
+      clusterKeys.forEach((clKey, cIdx) => {
+        const cCol = cIdx % clustersPerRow;
+        const cRow = Math.floor(cIdx / clustersPerRow);
+        const originX = 50 + cCol * (NODE_WIDTH + 80);
+        const originY = 50 + cRow * (NODE_HEIGHT * 4 + 120);
+
+        clusters[clKey].forEach((node, nIdx) => {
+          const x = originX;
+          const y = originY + nIdx * (NODE_HEIGHT + 24);
+          const visible = isNodeVisible(node);
+
+          calculatedNodes.push({
+            id: node.id,
+            type: 'architectureNode',
+            position: { x, y },
+            data: {
+              graphNode: node,
+              isSelected: selectedNodeId === node.id,
+              isDarkMode,
+              viewMode,
+              inDegree: inDegreeMap[node.id] || 0,
+              outDegree: outDegreeMap[node.id] || 0,
+              clusterName: clKey,
+            },
+            style: { opacity: visible ? 1 : 0.2, transition: 'opacity 0.2s ease' },
+          });
+        });
+      });
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // 4. Chế độ Mô hình Dữ liệu (ERD / Data Model Focus)
+    // ──────────────────────────────────────────────────────────
+    else if (viewMode === 'data_model') {
+      // Model đặt ở giữa, Service liên quan đặt ở trên, các file khác làm mờ
+      const modelNodes = graph.nodes.filter((n) => n.category === 'model');
+      const otherNodes = graph.nodes.filter((n) => n.category !== 'model');
+
+      // Tầng 1: Models
+      modelNodes.forEach((node, idx) => {
+        const x = 80 + idx * (NODE_WIDTH + GAP_X);
+        const y = 80;
+        calculatedNodes.push({
+          id: node.id,
+          type: 'architectureNode',
+          position: { x, y },
+          data: {
+            graphNode: node,
+            isSelected: selectedNodeId === node.id,
+            isDarkMode,
+            viewMode,
+            inDegree: inDegreeMap[node.id] || 0,
+            outDegree: outDegreeMap[node.id] || 0,
+          },
+        });
+      });
+
+      // Tầng 2: Các services và modules còn lại
+      const perRow = 4;
+      otherNodes.forEach((node, idx) => {
+        const col = idx % perRow;
+        const row = Math.floor(idx / perRow);
+        const x = 80 + col * (NODE_WIDTH + GAP_X);
+        const y = 300 + row * (NODE_HEIGHT + GAP_Y);
+        const isRelatedToModel = (graph.edges || []).some(
+          (e) => (e.source === node.id && modelNodes.some((m) => m.id === e.target)) ||
+                 (e.target === node.id && modelNodes.some((m) => m.id === e.source))
+        );
 
         calculatedNodes.push({
           id: node.id,
@@ -318,19 +598,47 @@ export default function ArchitectureCanvas({
             graphNode: node,
             isSelected: selectedNodeId === node.id,
             isDarkMode,
+            viewMode,
+            inDegree: inDegreeMap[node.id] || 0,
+            outDegree: outDegreeMap[node.id] || 0,
           },
-          style: {
-            opacity: isDimmed ? 0.2 : 1,
-            transition: 'opacity 0.2s ease',
-          },
+          style: { opacity: isRelatedToModel ? 1 : 0.15, transition: 'opacity 0.2s ease' },
         });
       });
+    }
 
-      const totalRows = Math.ceil(groupNodes.length / itemsPerRow);
-      currentY += totalRows * (NODE_HEIGHT + GAP_Y) + 40;
-    });
+    // ──────────────────────────────────────────────────────────
+    // 5. Chế độ Bản đồ Độ phức tạp (LOC Heatmap Matrix)
+    // ──────────────────────────────────────────────────────────
+    else if (viewMode === 'complexity') {
+      // Sắp xếp các node theo LOC giảm dần
+      const sortedByLoc = [...graph.nodes].sort((a, b) => (b.loc || 0) - (a.loc || 0));
+      const perRow = 4;
+      sortedByLoc.forEach((node, idx) => {
+        const col = idx % perRow;
+        const row = Math.floor(idx / perRow);
+        const x = 50 + col * (NODE_WIDTH + GAP_X);
+        const y = 50 + row * (NODE_HEIGHT + GAP_Y);
+        const visible = isNodeVisible(node);
 
-    // ── Tạo Edges với MŨI TÊN (ArrowClosed) rõ nét và sinh động ──
+        calculatedNodes.push({
+          id: node.id,
+          type: 'architectureNode',
+          position: { x, y },
+          data: {
+            graphNode: node,
+            isSelected: selectedNodeId === node.id,
+            isDarkMode,
+            viewMode,
+            inDegree: inDegreeMap[node.id] || 0,
+            outDegree: outDegreeMap[node.id] || 0,
+          },
+          style: { opacity: visible ? 1 : 0.2, transition: 'opacity 0.2s ease' },
+        });
+      });
+    }
+
+    // ── Tạo Edges ──
     const defaultEdgeColor = isDarkMode ? '#475569' : '#94a3b8';
     const highlightEdgeColor = isDarkMode ? '#38bdf8' : '#2563eb';
 
@@ -349,24 +657,48 @@ export default function ArchitectureCanvas({
         animated: !!isConnectedToSelected,
         style: {
           stroke: strokeColor,
-          strokeWidth: isConnectedToSelected ? 2.5 : 1.8,
+          strokeWidth: isConnectedToSelected ? 2.5 : 1.6,
         },
         markerEnd: {
           type: MarkerType.ArrowClosed,
-          width: 18,
-          height: 18,
+          width: 16,
+          height: 16,
           color: strokeColor,
         },
       };
     });
 
     return { nodes: calculatedNodes, edges: calculatedEdges };
-  }, [graph, selectedNodeId, searchTerm, activeCategory, isDarkMode]);
+  }, [graph, selectedNodeId, searchTerm, activeCategory, isDarkMode, viewMode, inDegreeMap, outDegreeMap]);
+
+  // Quản lý trạng thái Node & Edge để hỗ trợ kéo thả tự do không bị reset
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialElements.nodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialElements.edges);
+
+  useEffect(() => {
+    setNodes(initialElements.nodes);
+    setEdges(initialElements.edges);
+  }, [initialElements, setNodes, setEdges]);
+
+  // Đặt lại bố cục ban đầu
+  const handleResetLayout = useCallback(() => {
+    setNodes(initialElements.nodes);
+    setEdges(initialElements.edges);
+  }, [initialElements, setNodes, setEdges]);
+
+  // Copy mã Mermaid
+  const handleCopyMermaid = () => {
+    const mermaidText = generateMermaidCode(graph);
+    navigator.clipboard.writeText(mermaidText);
+    setHasCopiedMermaid(true);
+    antMessage.success('Đã sao chép mã Mermaid vào clipboard!');
+    setTimeout(() => setHasCopiedMermaid(false), 2000);
+  };
 
   // Màu sắc khung Canvas theo Theme
   const canvasBg = isDarkMode ? '#090d16' : '#f8fafc';
   const canvasBorder = isDarkMode ? '#1e293b' : '#e2e8f0';
-  const panelBg = isDarkMode ? 'rgba(15, 23, 42, 0.9)' : 'rgba(255, 255, 255, 0.9)';
+  const panelBg = isDarkMode ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255, 255, 255, 0.95)';
   const panelBorder = isDarkMode ? '#334155' : '#cbd5e1';
   const gridColor = isDarkMode ? '#1e293b' : '#e2e8f0';
 
@@ -374,7 +706,10 @@ export default function ArchitectureCanvas({
     <div
       style={{
         width: '100%',
-        height: '75vh',
+        flex: 1,
+        minHeight: 520,
+        height: '100%',
+        boxSizing: 'border-box',
         background: canvasBg,
         borderRadius: 14,
         overflow: 'hidden',
@@ -405,6 +740,8 @@ export default function ArchitectureCanvas({
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
           onNodeClick={(_, node) => onSelectNode?.(node.id)}
           fitView
           minZoom={0.2}
@@ -437,21 +774,37 @@ export default function ArchitectureCanvas({
             }}
           />
 
-          {/* Panel Trên Cùng: Tìm kiếm & Lọc Category */}
+          {/* ── Panel Trên Cùng: Bộ Chọn Loại Biểu Đồ & Tìm Kiếm ── */}
           <Panel position="top-left">
             <div
               style={{
                 background: panelBg,
-                backdropFilter: 'blur(8px)',
+                backdropFilter: 'blur(10px)',
                 padding: '8px 12px',
-                borderRadius: 8,
+                borderRadius: 10,
                 border: `1px solid ${panelBorder}`,
                 display: 'flex',
-                gap: 8,
+                gap: 10,
                 alignItems: 'center',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+                boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
               }}
             >
+              {/* Segmented Switcher chọn loại biểu đồ */}
+              <Segmented
+                size="small"
+                value={viewMode}
+                onChange={(val) => setViewMode(val as DiagramViewMode)}
+                options={[
+                  { label: 'Phân tầng', value: 'layered', icon: <ApartmentOutlined /> },
+                  { label: 'Luồng phụ thuộc', value: 'flow', icon: <BranchesOutlined /> },
+                  { label: 'Cụm Module', value: 'cluster', icon: <AppstoreOutlined /> },
+                  { label: 'Lược đồ ERD', value: 'data_model', icon: <DatabaseOutlined /> },
+                  { label: 'Độ phức tạp LOC', value: 'complexity', icon: <FireOutlined /> },
+                ]}
+              />
+
+              <div style={{ width: 1, height: 20, background: panelBorder }} />
+
               <Input
                 size="small"
                 prefix={<SearchOutlined style={{ color: isDarkMode ? '#94a3b8' : '#64748b' }} />}
@@ -460,13 +813,62 @@ export default function ArchitectureCanvas({
                 onChange={(e) => setSearchTerm(e.target.value)}
                 allowClear
                 style={{
-                  width: 170,
+                  width: 150,
                   background: isDarkMode ? '#1e293b' : '#ffffff',
                   borderColor: panelBorder,
                   color: isDarkMode ? '#f8fafc' : '#0f172a',
                 }}
               />
-              <Space size={4}>
+
+              <Tooltip title="Sắp xếp lại vị trí các khối theo loại biểu đồ đang chọn">
+                <Button
+                  size="small"
+                  icon={<UndoOutlined />}
+                  onClick={handleResetLayout}
+                  style={{
+                    fontSize: 12,
+                    background: isDarkMode ? '#1e293b' : '#ffffff',
+                    borderColor: panelBorder,
+                    color: isDarkMode ? '#cbd5e1' : '#475569',
+                  }}
+                >
+                  Căn chỉnh
+                </Button>
+              </Tooltip>
+
+              <Tooltip title="Xem và sao chép mã Mermaid của kiến trúc này">
+                <Button
+                  size="small"
+                  icon={<CodeOutlined />}
+                  onClick={() => setIsMermaidModalOpen(true)}
+                  style={{
+                    fontSize: 12,
+                    background: isDarkMode ? '#1e293b' : '#ffffff',
+                    borderColor: panelBorder,
+                    color: isDarkMode ? '#cbd5e1' : '#475569',
+                  }}
+                >
+                  Mermaid
+                </Button>
+              </Tooltip>
+            </div>
+          </Panel>
+
+          {/* Panel Trên Phải: Lọc Category */}
+          <Panel position="top-right">
+            <div
+              style={{
+                background: panelBg,
+                backdropFilter: 'blur(8px)',
+                padding: '6px 10px',
+                borderRadius: 8,
+                border: `1px solid ${panelBorder}`,
+                display: 'flex',
+                gap: 4,
+                alignItems: 'center',
+              }}
+            >
+              <Space size={3}>
                 {Object.entries(CATEGORY_CONFIG).map(([key, config]) => {
                   const isActive = activeCategory === key;
                   return (
@@ -475,7 +877,9 @@ export default function ArchitectureCanvas({
                       checked={isActive}
                       onChange={() => setActiveCategory(isActive ? null : key)}
                       style={{
-                        fontSize: 11,
+                        fontSize: 10,
+                        margin: 0,
+                        padding: '1px 6px',
                         background: isActive
                           ? isDarkMode
                             ? config.bgDark
@@ -493,7 +897,7 @@ export default function ArchitectureCanvas({
             </div>
           </Panel>
 
-          {/* Panel Dưới Cùng: Chú giải (Legend) & Đếm Edges */}
+          {/* Panel Dưới Cùng: Chú giải (Legend) */}
           <Panel position="bottom-left">
             <div
               style={{
@@ -515,34 +919,62 @@ export default function ArchitectureCanvas({
                   fontWeight: 600,
                 }}
               >
-                Mũi tên liên kết ({edges.length}):
+                Góc nhìn: {
+                  viewMode === 'layered' ? '🏢 Phân tầng C4' :
+                  viewMode === 'flow' ? '⚡ Luồng phụ thuộc DAG' :
+                  viewMode === 'cluster' ? '📦 Cụm Module' :
+                  viewMode === 'data_model' ? '🗄️ Mô hình ERD' :
+                  '🔥 Bản đồ Nhiệt LOC'
+                } ({nodes.length} files • {edges.length} liên kết)
               </span>
-              {Object.entries(CATEGORY_CONFIG).map(([key, config]) => (
-                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <span
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: '50%',
-                      background: config.color,
-                      display: 'inline-block',
-                    }}
-                  />
-                  <span
-                    style={{
-                      fontSize: 11,
-                      color: isDarkMode ? '#cbd5e1' : '#334155',
-                      fontWeight: 500,
-                    }}
-                  >
-                    {config.label.split(' / ')[0]}
-                  </span>
-                </div>
-              ))}
             </div>
           </Panel>
         </ReactFlow>
       )}
+
+      {/* Modal hiển thị mã Mermaid Export */}
+      <Modal
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <CodeOutlined style={{ color: '#38bdf8' }} />
+            <span>Mã Mermaid Kiến Trúc Repository</span>
+          </div>
+        }
+        open={isMermaidModalOpen}
+        onCancel={() => setIsMermaidModalOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setIsMermaidModalOpen(false)}>
+            Đóng
+          </Button>,
+          <Button
+            key="copy"
+            type="primary"
+            icon={hasCopiedMermaid ? <CheckOutlined /> : <CopyOutlined />}
+            onClick={handleCopyMermaid}
+          >
+            {hasCopiedMermaid ? 'Đã sao chép' : 'Sao chép mã'}
+          </Button>,
+        ]}
+      >
+        <Paragraph style={{ fontSize: 12, color: isDarkMode ? '#94a3b8' : '#64748b' }}>
+          Bạn có thể dán đoạn mã này vào Markdown file, README, PR description hoặc công cụ Mermaid Live Editor:
+        </Paragraph>
+        <pre
+          style={{
+            background: isDarkMode ? '#0f172a' : '#f1f5f9',
+            padding: 14,
+            borderRadius: 8,
+            maxHeight: 300,
+            overflowY: 'auto',
+            fontSize: 12,
+            fontFamily: 'monospace',
+            color: isDarkMode ? '#e2e8f0' : '#1e293b',
+            border: `1px solid ${panelBorder}`,
+          }}
+        >
+          {generateMermaidCode(graph)}
+        </pre>
+      </Modal>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { Octokit } from '@octokit/rest';
 import crypto from 'crypto';
+import { GitBranchDTO, GitCommitDTO, CommitDiffDTO } from '@codelens/shared';
 
 // ─────────────────────────────────────────────────────────────
 // GitHub Service — Lấy cây thư mục, nội dung file & PR Webhook
@@ -629,5 +630,160 @@ export class GitHubService {
       }
     }
     return true;
+  }
+
+  // ┌──────────────────────────────────────────────────────────┐
+  // │  Sprint 6: Multi-Tab Dashboard APIs (Branches & Commits) │
+  // └──────────────────────────────────────────────────────────┘
+
+  /**
+   * Lấy danh sách toàn bộ các nhánh (Branches) của Repository kèm commit SHA mới nhất
+   */
+  static async fetchRepoBranches(
+    owner: string,
+    repo: string,
+    userToken?: string
+  ): Promise<GitBranchDTO[]> {
+    const octokit = createOctokitInstance(userToken);
+
+    try {
+      let defaultBranchName = 'main';
+      try {
+        const repoMeta = await octokit.repos.get({ owner, repo });
+        defaultBranchName = repoMeta.data.default_branch || 'main';
+      } catch {
+        // Fallback default
+      }
+
+      const { data } = await octokit.repos.listBranches({
+        owner,
+        repo,
+        per_page: 100,
+      });
+
+      return data.map((b) => ({
+        name: b.name,
+        commitSha: b.commit.sha,
+        isDefault: b.name === defaultBranchName,
+        protected: b.protected,
+      }));
+    } catch (error: any) {
+      console.error(`❌ [GitHubService.fetchRepoBranches] Error for ${owner}/${repo}:`, error);
+      throw new Error(`Không thể lấy danh sách nhánh của ${owner}/${repo}: ${error.message || String(error)}`);
+    }
+  }
+
+  /**
+   * Lấy lịch sử commit có phân trang và thống kê additions / deletions
+   */
+  static async fetchCommitHistory(
+    owner: string,
+    repo: string,
+    branch?: string,
+    page = 1,
+    perPage = 20,
+    userToken?: string
+  ): Promise<GitCommitDTO[]> {
+    const octokit = createOctokitInstance(userToken);
+
+    try {
+      const { data } = await octokit.repos.listCommits({
+        owner,
+        repo,
+        sha: branch || undefined,
+        page,
+        per_page: perPage,
+      });
+
+      // Lấy stats chi tiết song song cho danh sách commit (tối đa 15 commits đầu để tối ưu tốc độ & rate limit)
+      const detailedStatsMap = new Map<string, { additions: number; deletions: number; total: number }>();
+      const topCommitsToFetch = data.slice(0, 15);
+
+      await Promise.allSettled(
+        topCommitsToFetch.map(async (c) => {
+          try {
+            const detail = await octokit.repos.getCommit({
+              owner,
+              repo,
+              ref: c.sha,
+            });
+            if (detail.data.stats) {
+              detailedStatsMap.set(c.sha, {
+                additions: detail.data.stats.additions || 0,
+                deletions: detail.data.stats.deletions || 0,
+                total: detail.data.stats.total || 0,
+              });
+            }
+          } catch {
+            // bỏ qua lỗi stats lẻ
+          }
+        })
+      );
+
+      return data.map((c) => {
+        const stats = detailedStatsMap.get(c.sha) || { additions: 0, deletions: 0, total: 0 };
+        return {
+          sha: c.sha,
+          shortSha: c.sha.substring(0, 7),
+          message: c.commit.message,
+          authorName: c.commit.author?.name || c.author?.login || 'Unknown',
+          authorEmail: c.commit.author?.email,
+          authorAvatarUrl: c.author?.avatar_url || (c.commit.author?.email ? `https://www.gravatar.com/avatar/${crypto.createHash('md5').update(c.commit.author.email.toLowerCase()).digest('hex')}?d=identicon` : undefined),
+          date: c.commit.author?.date || c.commit.committer?.date || new Date().toISOString(),
+          stats,
+          parents: c.parents ? c.parents.map((p) => p.sha) : [],
+        };
+      });
+    } catch (error: any) {
+      console.error(`❌ [GitHubService.fetchCommitHistory] Error for ${owner}/${repo}:`, error);
+      throw new Error(`Không thể lấy lịch sử commit của ${owner}/${repo}: ${error.message || String(error)}`);
+    }
+  }
+
+  /**
+   * Lấy chi tiết các file thay đổi (diff hunks, patch) của một commit
+   */
+  static async fetchCommitDetail(
+    owner: string,
+    repo: string,
+    commitSha: string,
+    userToken?: string
+  ): Promise<CommitDiffDTO> {
+    const octokit = createOctokitInstance(userToken);
+
+    try {
+      const { data } = await octokit.repos.getCommit({
+        owner,
+        repo,
+        ref: commitSha,
+      });
+
+      const files = (data.files || []).map((f) => ({
+        filename: f.filename,
+        status: f.status,
+        additions: f.additions,
+        deletions: f.deletions,
+        changes: f.changes,
+        patch: f.patch,
+      }));
+
+      return {
+        sha: data.sha,
+        shortSha: data.sha.substring(0, 7),
+        message: data.commit.message,
+        authorName: data.commit.author?.name || data.author?.login || 'Unknown',
+        authorAvatarUrl: data.author?.avatar_url,
+        date: data.commit.author?.date || data.commit.committer?.date || new Date().toISOString(),
+        stats: {
+          additions: data.stats?.additions || 0,
+          deletions: data.stats?.deletions || 0,
+          total: data.stats?.total || 0,
+        },
+        files,
+      };
+    } catch (error: any) {
+      console.error(`❌ [GitHubService.fetchCommitDetail] Error for ${owner}/${repo}@${commitSha}:`, error);
+      throw new Error(`Không thể lấy chi tiết commit ${commitSha}: ${error.message || String(error)}`);
+    }
   }
 }

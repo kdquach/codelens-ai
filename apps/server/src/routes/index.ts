@@ -28,6 +28,12 @@ router.get('/repos/:id/stream-status', RepoController.streamProgress);
 router.get('/repos/:id', RepoController.getRepoById);
 router.get('/repos/:id/files', RepoController.getFileContent);
 
+// ── Git Branches & Commits APIs (Sprint 6 - Multi-Tab Dashboard) ──
+router.get('/repos/:id/branches', optionalAuth, RepoController.getRepoBranches);
+router.get('/repos/:id/commits', optionalAuth, RepoController.getRepoCommits);
+router.get('/repos/:id/commits/:sha', optionalAuth, RepoController.getCommitDetail);
+router.post('/repos/:id/commits/:sha/summarize', optionalAuth, RepoController.summarizeCommit);
+
 // ── Code-Aware RAG Chat & Chat Sessions APIs (Sprint 3 & 5 - Task TS-22) ──
 router.post('/repos/:id/chat', optionalAuth, RepoController.streamChat);
 router.get('/repos/:id/chat-history', optionalAuth, RepoController.getChatHistory);

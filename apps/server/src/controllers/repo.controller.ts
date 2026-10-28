@@ -9,6 +9,7 @@ import { PRReviewModel } from '../models/prReview.model';
 import { checkAndResetUserQuota } from '../models/user.model';
 import { GitHubService } from '../services/github.service';
 import { RagService } from '../services/rag.service';
+import { GeminiService } from '../services/gemini.service';
 import { addIngestJob } from '../queues/ingest.queue';
 import { createRedisClient } from '../config/redis';
 import { getRepoProgressChannel } from '../workers/ingest.worker';
@@ -364,7 +365,7 @@ export class RepoController {
    */
   static async streamChat(req: Request, res: Response): Promise<void> {
     const { id: repoId } = req.params;
-    const { question, selectedFile, history } = req.body;
+    const { question, selectedFile, history, activeTab } = req.body;
     const user = req.user;
 
     // Thiết lập SSE Headers chuẩn
@@ -438,6 +439,7 @@ export class RepoController {
         repoId,
         question,
         selectedFile,
+        activeTab,
         history,
         onToken: (token) => {
           tokens.push(token);
@@ -657,6 +659,195 @@ export class RepoController {
     } catch (error: any) {
       console.error('❌ [RepoController.toggleWebhook] Error:', error);
       res.status(500).json({ message: error.message || 'Lỗi cấu hình webhook' });
+    }
+  }
+
+  // ┌──────────────────────────────────────────────────────────┐
+  // │  Sprint 6: Multi-Tab Dashboard APIs (Branches & Commits) │
+  // └──────────────────────────────────────────────────────────┘
+
+  /**
+   * GET /api/repos/:id/branches
+   * Lấy danh sách nhánh và commit hash đỉnh của Repository
+   */
+  static async getRepoBranches(req: Request, res: Response): Promise<void> {
+    try {
+      const { id: repoId } = req.params;
+      const user = req.user;
+
+      if (!repoId || !mongoose.Types.ObjectId.isValid(repoId)) {
+        res.status(400).json({ message: 'Repository ID không hợp lệ.' });
+        return;
+      }
+
+      const repo = await RepositoryModel.findById(repoId);
+      if (!repo) {
+        res.status(404).json({ message: 'Không tìm thấy repository.' });
+        return;
+      }
+
+      let userToken: string | undefined = undefined;
+      if (user?.encryptedGithubToken) {
+        userToken = decryptToken(user.encryptedGithubToken);
+      }
+
+      const branches = await GitHubService.fetchRepoBranches(repo.owner, repo.name, userToken);
+      res.json(branches);
+    } catch (error: any) {
+      console.error('❌ [RepoController.getRepoBranches] Error:', error);
+      res.status(500).json({ message: error.message || 'Lỗi lấy danh sách nhánh' });
+    }
+  }
+
+  /**
+   * GET /api/repos/:id/commits
+   * Lấy lịch sử commit có phân trang (branch, page, perPage)
+   */
+  static async getRepoCommits(req: Request, res: Response): Promise<void> {
+    try {
+      const { id: repoId } = req.params;
+      const { branch, page, perPage } = req.query;
+      const user = req.user;
+
+      if (!repoId || !mongoose.Types.ObjectId.isValid(repoId)) {
+        res.status(400).json({ message: 'Repository ID không hợp lệ.' });
+        return;
+      }
+
+      const repo = await RepositoryModel.findById(repoId);
+      if (!repo) {
+        res.status(404).json({ message: 'Không tìm thấy repository.' });
+        return;
+      }
+
+      let userToken: string | undefined = undefined;
+      if (user?.encryptedGithubToken) {
+        userToken = decryptToken(user.encryptedGithubToken);
+      }
+
+      const pageNum = Math.max(1, parseInt(String(page || '1'), 10) || 1);
+      const perPageNum = Math.min(50, Math.max(1, parseInt(String(perPage || '20'), 10) || 20));
+
+      const commits = await GitHubService.fetchCommitHistory(
+        repo.owner,
+        repo.name,
+        branch ? String(branch) : undefined,
+        pageNum,
+        perPageNum,
+        userToken
+      );
+
+      res.json(commits);
+    } catch (error: any) {
+      console.error('❌ [RepoController.getRepoCommits] Error:', error);
+      res.status(500).json({ message: error.message || 'Lỗi lấy lịch sử commit' });
+    }
+  }
+
+  /**
+   * GET /api/repos/:id/commits/:sha
+   * Lấy chi tiết commit kèm file diffs và patch
+   */
+  static async getCommitDetail(req: Request, res: Response): Promise<void> {
+    try {
+      const { id: repoId, sha } = req.params;
+      const user = req.user;
+
+      if (!repoId || !mongoose.Types.ObjectId.isValid(repoId)) {
+        res.status(400).json({ message: 'Repository ID không hợp lệ.' });
+        return;
+      }
+
+      if (!sha) {
+        res.status(400).json({ message: 'Commit SHA là bắt buộc.' });
+        return;
+      }
+
+      const repo = await RepositoryModel.findById(repoId);
+      if (!repo) {
+        res.status(404).json({ message: 'Không tìm thấy repository.' });
+        return;
+      }
+
+      let userToken: string | undefined = undefined;
+      if (user?.encryptedGithubToken) {
+        userToken = decryptToken(user.encryptedGithubToken);
+      }
+
+      const commitDetail = await GitHubService.fetchCommitDetail(repo.owner, repo.name, sha, userToken);
+      res.json(commitDetail);
+    } catch (error: any) {
+      console.error(`❌ [RepoController.getCommitDetail] Error for commit ${req.params.sha}:`, error);
+      res.status(500).json({ message: error.message || 'Lỗi lấy chi tiết commit' });
+    }
+  }
+
+  /**
+   * POST /api/repos/:id/commits/:sha/summarize
+   * Dùng Gemini 2.5 Flash phân tích diff hunks của commit và trả về tóm tắt ngắn gọn 2-3 gạch đầu dòng
+   */
+  static async summarizeCommit(req: Request, res: Response): Promise<void> {
+    try {
+      const { id: repoId, sha } = req.params;
+      const user = req.user;
+
+      if (!repoId || !mongoose.Types.ObjectId.isValid(repoId)) {
+        res.status(400).json({ message: 'Repository ID không hợp lệ.' });
+        return;
+      }
+
+      if (!sha) {
+        res.status(400).json({ message: 'Commit SHA là bắt buộc.' });
+        return;
+      }
+
+      const repo = await RepositoryModel.findById(repoId);
+      if (!repo) {
+        res.status(404).json({ message: 'Không tìm thấy repository.' });
+        return;
+      }
+
+      let userToken: string | undefined = undefined;
+      if (user?.encryptedGithubToken) {
+        userToken = decryptToken(user.encryptedGithubToken);
+      }
+
+      const commitDetail = await GitHubService.fetchCommitDetail(repo.owner, repo.name, sha, userToken);
+
+      // Chuẩn bị diff hunks gọn gàng cho Gemini phân tích
+      const diffSnippets = commitDetail.files
+        .slice(0, 10)
+        .map((f) => {
+          const patchPreview = (f.patch || '').slice(0, 1500);
+          return `File: ${f.filename} (${f.status}, +${f.additions}/-${f.deletions})\n${patchPreview}`;
+        })
+        .join('\n---\n');
+
+      const prompt = `Phân tích commit sau đây của dự án "${repo.name}":
+- Commit SHA: ${commitDetail.sha}
+- Message: ${commitDetail.message}
+- Tác giả: ${commitDetail.authorName}
+- Thống kê: +${commitDetail.stats.additions} / -${commitDetail.stats.deletions} trong ${commitDetail.files.length} files
+
+Các file thay đổi và diff hunks tiêu biểu:
+${diffSnippets || '(Không có patch content / thay đổi nhị phân)'}
+
+YÊU CẦU:
+Tóm tắt mục đích chính và các thay đổi cốt lõi của commit này bằng CHÍNH XÁC 2 đến 3 gạch đầu dòng ngắn gọn, súc tích bằng tiếng Việt chuyên ngành lập trình. Không viết dông dài, đi thẳng vào trọng tâm tính năng/bugfix/refactor.`;
+
+      const systemInstruction =
+        'Bạn là Release Engineer & Code Auditor cấp cao. Nhiệm vụ của bạn là giải thích súc tích các thay đổi trong commit code.';
+
+      const summary = await GeminiService.generateContent(prompt, systemInstruction);
+
+      res.json({
+        sha: commitDetail.sha,
+        shortSha: commitDetail.shortSha,
+        summary: summary.trim(),
+      });
+    } catch (error: any) {
+      console.error(`❌ [RepoController.summarizeCommit] Error for commit ${req.params.sha}:`, error);
+      res.status(500).json({ message: error.message || 'Lỗi tóm tắt commit bằng AI' });
     }
   }
 }
