@@ -12,8 +12,10 @@
     "dev:web": "npm run dev --workspace=@codelens/web",
     "build": "npm run build --workspaces --if-present"
   },
-  "devDependencies": {
-    "concurrently": "^9.0.0",
+  "dependencies": {
     "typescript": "^5.6.2"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
   }
 }

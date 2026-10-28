@@ -11,7 +11,7 @@ services:
     plan: starter
     region: singapore
     rootDir: .
-    buildCommand: npm ci && cd apps/server && npm run build
+    buildCommand: npm ci --include=dev && cd apps/server && npm run build
     startCommand: cd apps/server && npm run start
     healthCheckPath: /health
     autoDeploy: true
@@ -43,7 +43,7 @@ services:
     plan: starter
     region: singapore
     rootDir: .
-    buildCommand: npm ci && cd apps/server && npm run build
+    buildCommand: npm ci --include=dev && cd apps/server && npm run build
     startCommand: cd apps/server && npx tsx src/workers/ingest.worker.ts
     autoDeploy: true
     envVars:

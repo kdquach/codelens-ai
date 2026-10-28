@@ -16,7 +16,7 @@ app.use(cors());
 // Giữ lại rawBody Buffer phục vụ xác thực chữ ký HMAC-SHA256 từ GitHub Webhook
 app.use(
   express.json({
-    verify: (req: any, _res, buf) => {
+    verify: (req: any, _res: any, buf: any) => {
       req.rawBody = buf;
     },
   })
@@ -24,7 +24,7 @@ app.use(
 
 app.use('/api', apiRoutes);
 
-app.get('/health', (_, res) => res.json({ status: 'OK', service: 'CodeLens Express API' }));
+app.get('/health', (_req: any, res: any) => res.json({ status: 'OK', service: 'CodeLens Express API' }));
 
 connectDB().then(async () => {
   // Tự động khởi chạy BullMQ Ingest Worker & PR Review Worker cùng tiến trình API
